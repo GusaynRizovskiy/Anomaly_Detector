@@ -10,7 +10,7 @@ import logging
 import collections
 import pandas as pd
 import json
-# import matplotlib.pyplot as plt  # УДАЛЕНО: Больше не нужен
+import matplotlib.pyplot as plt
 
 from core.anomaly_detector import AnomalyDetector
 from core.sniffer import Sniffer
@@ -144,118 +144,146 @@ def handle_metrics_for_collect(metrics, args):
 
 
 def run_file_validation(args, processor, detector):
-    """
-    НОВАЯ ФУНКЦИЯ: Проверка модели на CSV-файле (Offline Validation).
-    """
-    logger.info(f"--- ЗАПУСК РЕЖИМА ВАЛИДАЦИИ ФАЙЛА ---")
+    logger.info("--- ЗАПУСК РЕЖИМА ВАЛИДАЦИИ ФАЙЛА ---")
     logger.info(f"Файл данных: {args.data_file}")
 
-    # 1. Загрузка компонентов
+    # Загрузка модели и скейлера
     detector.load_model(args.model_path)
-    if detector.model is None: return
-
+    if detector.model is None:
+        return
     processor.scaler = detector.load_scaler(args.scaler_path)
-    if processor.scaler is None: return
+    if processor.scaler is None:
+        return
 
+    # Загрузка порога
     try:
         with open(args.threshold_file, 'r') as f:
             threshold_val = float(f.read().strip())
-        logger.info(f"Порог (Threshold) загружен: {threshold_val:.6f}")
+        logger.info(f"Порог загружен: {threshold_val:.6f}")
     except Exception as e:
-        logger.error(f"Не удалось загрузить файл порога: {e}")
+        logger.error(f"Не удалось загрузить порог: {e}")
         return
 
-    # 2. Чтение CSV (ИСПРАВЛЕНО)
+    # Чтение CSV с автоматическим определением разделителя
     try:
-        # Добавлено sep=None, engine='python' для автоматического определения разделителя (; или ,)
         df = pd.read_csv(args.data_file, sep=None, engine='python')
-
-        # Логируем, что мы на самом деле прочитали
         logger.info(f"Прочитано: строк={df.shape[0]}, столбцов={df.shape[1]}")
 
-        # Проверка на "склеившиеся" столбцы
         if df.shape[1] < 2:
-            logger.error(f"ОШИБКА: Обнаружено всего {df.shape[1]} столбцов. Вероятно, неверный разделитель в CSV.")
-            logger.error(f"Первые 5 строк файла:\n{df.head()}")
+            logger.error(f"ОШИБКА: всего {df.shape[1]} столбцов. Неверный разделитель?")
+            logger.error(f"Первые 5 строк:\n{df.head()}")
             return
 
-        # Удаляем timestamp (первый столбец), если он похож на время
-        # Или просто удаляем 1-й столбец, если их на 1 больше, чем нужно признаков
+        # Попытка извлечь временную метку (первый столбец, если похож на дату/время)
+        timestamp_col = None
         first_col = df.columns[0].lower()
         if 'time' in first_col or 'date' in first_col or 'timestamp' in first_col:
-            df = df.iloc[:, 1:]
-            logger.info("Первый столбец удален (считаем его timestamp).")
+            timestamp_col = df.iloc[:, 0].copy()  # сохраняем копию временных меток
+            df = df.iloc[:, 1:]                   # удаляем столбец времени из данных
+            logger.info("Первый столбец интерпретирован как временная метка и сохранён для графика.")
+        else:
+            logger.warning("Не удалось обнаружить столбец с временной меткой. Ось X будет индексом окна.")
 
-        # Проверка соответствия количеству признаков (должно быть 26)
-        # processor.scaler.n_features_in_ хранит сколько признаков было при обучении
+        # Проверка количества признаков
         expected_features = processor.scaler.n_features_in_
         if df.shape[1] != expected_features:
-            logger.error(f"НЕСОВПАДЕНИЕ ПРИЗНАКОВ: В файле {df.shape[1]} столбцов, а модель ждет {expected_features}.")
+            logger.error(f"Несовпадение признаков: в файле {df.shape[1]}, модель ожидает {expected_features}.")
             return
 
     except Exception as e:
         logger.error(f"Ошибка чтения файла: {e}")
         return
 
-    # 3. Препроцессинг (Только transform!)
+    # Масштабирование (трансформация)
     try:
         scaled_data = processor.scaler.transform(df)
     except Exception as e:
-        logger.error(f"Ошибка масштабирования. Убедитесь, что в файле только числа! {e}")
+        logger.error(f"Ошибка масштабирования: {e}")
         return
 
-    # 4. Создание окон
+    # Создание окон
     X_val = processor.create_sequences(scaled_data, args.time_step)
     if len(X_val) == 0:
-        logger.error("Файл слишком короткий для выбранного time_step.")
+        logger.error("Файл слишком короткий для заданного time_step.")
         return
-
     logger.info(f"Сформировано окон для анализа: {len(X_val)}")
 
-    # 5. Пакетное предсказание
+    # Предсказание
     logger.info("Выполняется предсказание нейросети...")
     try:
         reconstructions = detector.model.predict(X_val, verbose=1)
-
-        # Расчет MSE
+        # MSE для каждого окна (усреднение по времени и признакам)
         mse_errors = np.mean(np.power(X_val - reconstructions, 2), axis=(1, 2))
-
-        # 6. Поиск аномалий
-        anomalies_idx = np.where(mse_errors > threshold_val)[0]
-        num_anomalies = len(anomalies_idx)
-        # --- НОВЫЙ БЛОК: Сохранение в JSON ---
-        if num_anomalies > 0:
-            logger.info(f"Сохранение {num_anomalies} событий в JSON лог...")
-
-            for idx in anomalies_idx:
-                # idx - это номер окна. В файле это примерно (idx + time_step) строка.
-
-                # Формируем данные для лога
-                anomaly_info = {
-                    "source_file": args.data_file,  # Из какого файла взято
-                    "window_index": int(idx),  # Номер окна по порядку
-                    "mse_error": float(mse_errors[idx]),  # Ошибка
-                    "threshold": float(threshold_val)  # Порог
-                    # "raw_metrics": ... (сложно получить, опускаем)
-                }
-
-                # Пишем с пометкой OFFLINE
-                log_anomaly(anomaly_info, event_type="OFFLINE_VALIDATION")
-
-            logger.info("Сохранение завершено.")
-        # -------------------------------------
-
-        # Вывод результатов в консоль
-        print("\n" + "=" * 40)
-        print(f"РЕЗУЛЬТАТЫ ВАЛИДАЦИИ")
-        print(f"Файл: {args.data_file}")
-        print(f"Всего проверено окон: {len(mse_errors)}")
-        print(f"Обнаружено аномалий: {num_anomalies}")
-        print(f"Процент аномалий:   {(num_anomalies / len(mse_errors)) * 100:.2f}%")
-        print("=" * 40 + "\n")
-
     except Exception as e:
-        logger.error(f"Ошибка при расчете: {e}")
+        logger.error(f"Ошибка при расчёте: {e}")
+        return
+
+    # Поиск аномалий
+    anomalies_idx = np.where(mse_errors > threshold_val)[0]
+    num_anomalies = len(anomalies_idx)
+    logger.info(f"Обнаружено аномалий: {num_anomalies}")
+
+    # --- Сохранение результатов в JSON (как было) ---
+    if num_anomalies > 0:
+        logger.info(f"Сохранение {num_anomalies} событий в JSON лог...")
+        for idx in anomalies_idx:
+            anomaly_info = {
+                "source_file": args.data_file,
+                "window_index": int(idx),
+                "mse_error": float(mse_errors[idx]),
+                "threshold": float(threshold_val)
+            }
+            log_anomaly(anomaly_info, event_type="OFFLINE_VALIDATION")
+        logger.info("Сохранение завершено.")
+
+    # --- Построение графика ---
+    try:
+        # Формирование оси X (времени)
+        if timestamp_col is not None:
+            # Для каждого окна берём временную метку последней строки в окне
+            # (индексы строк: i ... i+time_step-1)
+            x_values = [timestamp_col.iloc[i + args.time_step - 1] for i in range(len(X_val))]
+        else:
+            x_values = list(range(len(X_val)))  # просто индекс окна
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(x_values, mse_errors, label='MSE ошибка', color='blue', linewidth=1)
+        plt.axhline(y=threshold_val, color='red', linestyle='--', label=f'Порог ({threshold_val:.4f})')
+        plt.xlabel('Время' if timestamp_col is not None else 'Номер окна')
+        plt.ylabel('MSE ошибка')
+        plt.title(f'Валидация файла: {os.path.basename(args.data_file)}')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        # Выделение аномальных точек (если их не слишком много)
+        if len(anomalies_idx) > 0:
+            plt.scatter([x_values[i] for i in anomalies_idx],
+                        [mse_errors[i] for i in anomalies_idx],
+                        color='red', s=30, label='Аномалии', zorder=5)
+            plt.legend()
+
+        # Сохранение графика
+        plots_dir = "plots"
+        os.makedirs(plots_dir, exist_ok=True)
+        base_name = os.path.splitext(os.path.basename(args.data_file))[0]
+        plot_path = os.path.join(plots_dir, f"validation_{base_name}.png")
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        logger.info(f"График сохранён: {plot_path}")
+
+        # Опционально: показать график (если запуск в интерактивном режиме)
+        # plt.show()
+        plt.close()
+    except Exception as e:
+        logger.error(f"Ошибка при построении графика: {e}")
+
+    # Вывод статистики в консоль
+    print("\n" + "="*40)
+    print(f"РЕЗУЛЬТАТЫ ВАЛИДАЦИИ")
+    print(f"Файл: {args.data_file}")
+    print(f"Всего проверено окон: {len(mse_errors)}")
+    print(f"Обнаружено аномалий: {num_anomalies}")
+    print(f"Процент аномалий:    {(num_anomalies/len(mse_errors))*100:.2f}%")
+    print("="*40 + "\n")
 
 def main():
     global data_buffer, threshold

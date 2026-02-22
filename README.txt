@@ -66,5 +66,7 @@ python main.py train --data-file dataset_ver2.csv -s scaler_ver2.pkl
 3)Для обнаружения аномалий в статичном файле применяется режим validate
 python main.py validate --data-file my_attack.csv
 python main.py validate --data-file attack_data.csv --scaler_path scaler_v2.pkl
+python main.py validate -d <файл_с_данными> -ts <длина_окна> -m <путь_к_модели> -s <путь_к_скейлеру> -thr <файл_с_порогом>
+python main.py validate -d test_data.csv -ts 10 -m model.keras -s scaler.pkl -thr threshold.txt
 4)Для режима тестирования
 python main.py test --interface "Realtek RTL8822CE 802.11ac PCIe Adapter" --network 192.168.1.0/24
