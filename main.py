@@ -286,9 +286,10 @@ def run_file_validation(args, processor, detector):
         plt.savefig(plot_path, dpi=150, bbox_inches='tight')
         logger.info(f"График сохранён: {plot_path}")
 
-        # Опционально показать (закомментировано)
-        # plt.show()
-        plt.close()
+        if args.show:
+            plt.show()
+        else:
+            plt.close()
 
     except Exception as e:
         logger.error(f"Ошибка при построении графика: {e}")
@@ -320,6 +321,7 @@ def main():
     parser.add_argument('-m', '--model_path', default='anomaly_detector_model.keras', help="Путь к модели.")
     parser.add_argument('-s', '--scaler_path', default='scaler.pkl', help="Путь к скейлеру.")
     parser.add_argument('-thr', '--threshold_file', default='threshold.txt', help="Путь к порогу.")
+    parser.add_argument('--show', action='store_true', help='Показать график на экране после валидации')
 
     args = parser.parse_args()
 
