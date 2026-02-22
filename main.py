@@ -241,13 +241,26 @@ def run_file_validation(args, processor, detector):
         # Формирование оси X (времени)
         if timestamp_col is not None:
             # Для каждого окна берём временную метку последней строки в окне
-            # (индексы строк: i ... i+time_step-1)
-            x_values = [timestamp_col.iloc[i + args.time_step - 1] for i in range(len(X_val))]
+            x_values = [str(timestamp_col.iloc[i + args.time_step - 1]) for i in range(len(X_val))]
         else:
             x_values = list(range(len(X_val)))  # просто индекс окна
 
         plt.figure(figsize=(12, 6))
         plt.plot(x_values, mse_errors, label='MSE ошибка', color='blue', linewidth=1)
+
+        # --- Настройка меток оси X (прореживание при большом количестве окон) ---
+        if len(x_values) > 20:
+            max_ticks = 10
+            step = max(1, len(x_values) // max_ticks)
+            tick_positions = list(range(0, len(x_values), step))
+            # добавим последнее окно, если оно не попало
+            if tick_positions[-1] != len(x_values) - 1:
+                tick_positions.append(len(x_values) - 1)
+            plt.xticks(tick_positions, [x_values[i] for i in tick_positions], rotation=45, ha='right')
+        else:
+            plt.xticks(rotation=45, ha='right')
+        # ------------------------------------------------------------
+
         plt.axhline(y=threshold_val, color='red', linestyle='--', label=f'Порог ({threshold_val:.4f})')
         plt.xlabel('Время' if timestamp_col is not None else 'Номер окна')
         plt.ylabel('MSE ошибка')
@@ -255,7 +268,10 @@ def run_file_validation(args, processor, detector):
         plt.legend()
         plt.grid(True, alpha=0.3)
 
-        # Выделение аномальных точек (если их не слишком много)
+        # Автоматическая подгонка, чтобы подписи поместились
+        plt.tight_layout()
+
+        # Выделение аномальных точек
         if len(anomalies_idx) > 0:
             plt.scatter([x_values[i] for i in anomalies_idx],
                         [mse_errors[i] for i in anomalies_idx],
@@ -270,20 +286,21 @@ def run_file_validation(args, processor, detector):
         plt.savefig(plot_path, dpi=150, bbox_inches='tight')
         logger.info(f"График сохранён: {plot_path}")
 
-        # Опционально: показать график (если запуск в интерактивном режиме)
+        # Опционально показать (закомментировано)
         # plt.show()
         plt.close()
+
     except Exception as e:
         logger.error(f"Ошибка при построении графика: {e}")
 
     # Вывод статистики в консоль
-    print("\n" + "="*40)
+    print("\n" + "=" * 40)
     print(f"РЕЗУЛЬТАТЫ ВАЛИДАЦИИ")
     print(f"Файл: {args.data_file}")
     print(f"Всего проверено окон: {len(mse_errors)}")
     print(f"Обнаружено аномалий: {num_anomalies}")
-    print(f"Процент аномалий:    {(num_anomalies/len(mse_errors))*100:.2f}%")
-    print("="*40 + "\n")
+    print(f"Процент аномалий:    {(num_anomalies / len(mse_errors)) * 100:.2f}%")
+    print("=" * 40 + "\n")
 
 def main():
     global data_buffer, threshold
