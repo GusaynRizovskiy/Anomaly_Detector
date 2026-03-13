@@ -38,87 +38,104 @@ threshold = None
 
 
 def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED"):
-    """Запись данных об аномалии в JSON-файл."""
+    """
+    Запись данных об аномалии в JSON-файл с распределением по папкам.
+    """
     try:
-        log_dir = "logs"
+        # Определяем целевую папку в зависимости от типа события
+        if event_type == "OFFLINE_DETECTION":
+            log_dir = os.path.join("logs", "offline")
+        else:
+            log_dir = os.path.join("logs", "online")
+
         os.makedirs(log_dir, exist_ok=True)
-        filename = datetime.now().strftime("anomaly_log_%Y-%m-%d.json")
+
+        # Формируем имя файла (по дате)
+        filename = datetime.now().strftime("anomaly_%Y-%m-%d.json")
         filepath = os.path.join(log_dir, filename)
 
+        # Формат записи остается идентичным вашему стандарту
         record = {
             "timestamp": datetime.now().isoformat(),
-            "level": "CRITICAL",  # Можно менять на INFO для валидации, если хочешь
-            "event_id": event_type,  # <--- ТЕПЕРЬ МЫ МОЖЕМ ЭТО МЕНЯТЬ
-            "description": "Обнаружена аномалия (валидация файла)" if event_type == "OFFLINE_VALIDATION" else "Обнаружена сетевая аномалия",
+            "level": "CRITICAL",
+            "event_id": event_type,
+            "description": "Detected network anomaly",
             "details": anomaly_data
         }
 
         with open(filepath, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
-        # Убрал лишний warning для валидации, чтобы не засорять консоль тысячами строк
-        if event_type != "OFFLINE_VALIDATION":
-            logger.warning(f"!!! АНОМАЛИЯ ЗАПИСАНА: MSE: {anomaly_data['mse_error']:.4f}")
+        if event_type != "OFFLINE_DETECTION":
+            logger.warning(f"!!! ONLINE ANOMALY: MSE {anomaly_data['mse_error']:.4f}")
 
     except Exception as e:
-        logger.error(f"Ошибка при записи лога аномалии: {e}")
+        logger.error(f"Ошибка при записи лога: {e}")
 
 
 def handle_metrics_for_test(metrics, processor, detector, args):
-    """Обработчик для режима TEST (Live Detection)."""
+    """
+    Обработка метрик в реальном времени для режима detect-online.
+    """
     global data_buffer, threshold
 
-    if threshold is None:
-        return
+    # 1. Превращаем словарь метрик в плоский список (вектор)
+    row = []
+    # Важно: порядок извлечения должен строго соответствовать HEADERS
+    row.append(metrics['total']['packets'])
+    row.append(metrics['total']['loopback'])
+    row.append(metrics['total']['multicast'])
+    row.append(metrics['total']['udp'])
+    row.append(metrics['total']['tcp'])
+    row.append(metrics['total']['options'])
+    row.append(metrics['total']['fragment'])
+    row.append(metrics['total']['fin'])
+    row.append(metrics['total']['syn'])
+    row.append(metrics['total']['intensivity'])
 
-    # Формирование строки данных
-    row_data = [
-        metrics['total']['packets'], metrics['total']['loopback'], metrics['total']['multicast'],
-        metrics['total']['udp'], metrics['total']['tcp'], metrics['total']['options'],
-        metrics['total']['fragment'], metrics['total']['fin'], metrics['total']['syn'],
-        metrics['total']['intensivity'],
-        metrics['input']['packets'], metrics['input']['udp'], metrics['input']['tcp'],
-        metrics['input']['options'], metrics['input']['fragment'], metrics['input']['fin'],
-        metrics['input']['syn'], metrics['input']['intensivity'],
-        metrics['output']['packets'], metrics['output']['udp'], metrics['output']['tcp'],
-        metrics['output']['options'], metrics['output']['fragment'], metrics['output']['fin'],
-        metrics['output']['syn'], metrics['output']['intensivity']
-    ]
+    row.append(metrics['input']['packets'])
+    row.append(metrics['input']['udp'])
+    row.append(metrics['input']['tcp'])
+    row.append(metrics['input']['options'])
+    row.append(metrics['input']['fragment'])
+    row.append(metrics['input']['fin'])
+    row.append(metrics['input']['syn'])
+    row.append(metrics['input']['intensivity'])
 
-    df = pd.DataFrame([row_data], columns=HEADERS)
+    row.append(metrics['output']['packets'])
+    row.append(metrics['output']['udp'])
+    row.append(metrics['output']['tcp'])
+    row.append(metrics['output']['options'])
+    row.append(metrics['output']['fragment'])
+    row.append(metrics['output']['fin'])
+    row.append(metrics['output']['syn'])
+    row.append(metrics['output']['intensivity'])
 
-    # Нормализация (строго transform, без fit)
-    try:
-        if processor.scaler is None:
-            logger.error("Ошибка: Scaler не загружен!")
-            return
-        scaled_metric = processor.scaler.transform(df)
-    except Exception as e:
-        logger.error(f"Ошибка нормализации данных: {e}")
-        return
+    # 2. Нормализация данных
+    # Подготавливаем данные для скейлера (ожидает 2D массив)
+    scaled_row = processor.scaler.transform([row])[0]
+    data_buffer.append(scaled_row)
 
-    # Добавление в буфер
-    data_buffer.append(scaled_metric[0])
+    # 3. Проверка: накопилось ли достаточно данных для окна (time_step)
+    if len(data_buffer) == args.time_step:
+        sequence = np.array([list(data_buffer)])
 
-    # Проверка заполненности буфера
-    if len(data_buffer) < args.time_step:
-        logger.info(f"Накопление буфера... {len(data_buffer)}/{args.time_step}")
-        return
+        # Предсказание (реконструкция)
+        reconstruction = detector.model.predict(sequence, verbose=0)
 
-    # Предсказание
-    # Преобразуем буфер в 3D массив (1, time_step, num_features)
-    input_data = np.array(list(data_buffer))[np.newaxis, :, :]
+        # Расчет ошибки MSE
+        mse = np.mean(np.power(sequence - reconstruction, 2))
 
-    error = detector.calculate_reconstruction_error(input_data)
-
-    if error > threshold:
-        log_anomaly({
-            "mse_error": error,
-            "threshold": threshold,
-            "metrics_snapshot": dict(zip(HEADERS, row_data))
-        })
-    else:
-        logger.info(f"Статус OK. MSE: {error:.4f} (Порог: {threshold:.4f})")
+        # 4. Сравнение с порогом
+        if mse > threshold:
+            # Формируем данные для лога
+            anomaly_info = {
+                "mse_error": float(mse),
+                "threshold": float(threshold),
+                "metrics_snapshot": dict(zip(HEADERS, row))
+            }
+            # Вызываем лог. Тип события по умолчанию направит в logs/online
+            log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED")
 
 
 def handle_metrics_for_collect(metrics, args):
@@ -233,7 +250,7 @@ def run_file_validation(args, processor, detector):
                 "mse_error": float(mse_errors[idx]),
                 "threshold": float(threshold_val)
             }
-            log_anomaly(anomaly_info, event_type="OFFLINE_VALIDATION")
+            log_anomaly(anomaly_info, event_type="OFFLINE_DETECTION")
         logger.info("Сохранение завершено.")
 
     # --- Построение графика ---
