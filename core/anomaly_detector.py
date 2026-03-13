@@ -8,6 +8,9 @@ from tensorflow.keras.losses import MeanSquaredError as mse_loss
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import pickle
 import logging
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+import matplotlib.pyplot as plt
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +48,7 @@ class AnomalyDetector:
         self.model.compile(optimizer='adam', loss=self.loss_metric)
 
     def train_model(self, X_train, epochs, batch_size, model_path):
-        """Обучение модели."""
+        """Обучение модели с контролем переобучения и сохранением метрик."""
         if self.model is None:
             self.build_model()
 
@@ -55,7 +58,8 @@ class AnomalyDetector:
         ]
 
         try:
-            self.model.fit(
+            # Теперь сохраняем результат обучения в переменную history
+            history = self.model.fit(
                 X_train, X_train,
                 epochs=epochs,
                 batch_size=batch_size,
@@ -63,10 +67,27 @@ class AnomalyDetector:
                 callbacks=callbacks,
                 verbose=2
             )
-            logger.info("Обучение завершено. Модель сохранена.")
+
+            # Добавляем визуализацию результатов для защиты
+            self._save_training_plot(history)
+
+            logger.info("Обучение завершено. Модель сохранена, графики построены.")
         except Exception as e:
             logger.error(f"Ошибка в процессе обучения: {e}")
-            return
+
+    def _save_training_plot(self, history):
+        """Вспомогательный метод для построения графиков."""
+        os.makedirs('plots', exist_ok=True)
+        plt.figure(figsize=(8, 5))
+        plt.plot(history.history['loss'], label='Training Loss')
+        plt.plot(history.history['val_loss'], label='Validation Loss')
+        plt.title('Training and Validation Loss')
+        plt.xlabel('Epochs')
+        plt.ylabel('MSE Loss')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig('plots/training_history.png')
+        plt.close()
 
     def calculate_reconstruction_error(self, X):
         """Вычисляет ошибку реконструкции для одного образца."""
