@@ -47,6 +47,15 @@ def send_alert_to_remote(anomaly_data, host, port):
     except Exception as e:
         logger.error(f"Не удалось отправить алерт на {host}:{port}: {e}")
 
+def get_severity(mse, threshold):
+    ratio = mse / threshold
+    if ratio > 3.0:
+        return "CRITICAL"
+    elif ratio > 1.5:
+        return "WARNING"
+    else:
+        return "INFO"
+
 def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
     """
     Запись данных об аномалии в JSON-файл и опциональная отправка на удаленный сервер.
@@ -62,12 +71,12 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
 
         filename = datetime.now().strftime("anomaly_%Y-%m-%d.json")
         filepath = os.path.join(log_dir, filename)
-
+        level = get_severity(anomaly_data['mse_error'], anomaly_data['threshold'])
         record = {
             "timestamp": datetime.now().isoformat(),
-            "level": "CRITICAL",
+            "level": level,  # Теперь уровень меняется
             "event_id": event_type,
-            "description": "Detected network anomaly",
+            "description": f"Network anomaly detected with severity: {level}",
             "details": anomaly_data
         }
 
@@ -81,6 +90,7 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
         # 2. НОВОЕ: Отправка на удаленный сервер, если аргументы переданы
         if args and getattr(args, 'remote_host', None) and getattr(args, 'remote_port', None):
             send_alert_to_remote(record, args.remote_host, args.remote_port)
+
 
     except Exception as e:
         logger.error(f"Ошибка при логировании аномалии: {e}")
