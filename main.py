@@ -56,6 +56,40 @@ def get_severity(mse, threshold):
     else:
         return "INFO"
 
+
+last_anomaly_timestamp = None
+anomaly_series_id = 0
+
+
+def get_anomaly_details(sequence, reconstruction, threshold):
+    """Аналитика аномалии: оценка тяжести, вклад признаков и ID серии."""
+    global anomaly_series_id, last_anomaly_timestamp
+
+    # Расчет ошибки
+    mse = np.mean(np.power(sequence - reconstruction, 2))
+    score = max(0, (mse / threshold - 1) * 100)
+
+    # 1. Поиск "виновного" признака (где ошибка максимальна)
+    # Берем последнюю строку окна, так как она самая актуальная
+    diff = np.abs(sequence[0, -1] - reconstruction[0, -1])
+    top_feature_idx = np.argmax(diff)
+    top_feature_name = HEADERS[top_feature_idx]
+
+    # 2. Логика серий (ID серии)
+    now = datetime.now()
+    if last_anomaly_timestamp and (now - last_anomaly_timestamp).total_seconds() < 15:
+        # Если аномалии идут чаще чем раз в 15 секунд - это одна серия
+        pass
+    else:
+        anomaly_series_id += 1
+    last_anomaly_timestamp = now
+
+    return {
+        "anomaly_score": round(score, 2),
+        "top_contributing_feature": top_feature_name,
+        "feature_contribution_value": float(diff[top_feature_idx]),
+        "series_id": anomaly_series_id
+    }
 def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
     """
     Запись данных об аномалии в JSON-файл и опциональная отправка на удаленный сервер.
@@ -74,9 +108,9 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
         level = get_severity(anomaly_data['mse_error'], anomaly_data['threshold'])
         record = {
             "timestamp": datetime.now().isoformat(),
-            "level": level,  # Теперь уровень меняется
+            "level": level,  # Теперь динамический уровень
             "event_id": event_type,
-            "description": f"Network anomaly detected with severity: {level}",
+            "description": f"Network anomaly detected (Score: {anomaly_data.get('anomaly_score', 0)}%)",
             "details": anomaly_data
         }
 
@@ -153,14 +187,16 @@ def handle_metrics_for_test(metrics, processor, detector, args):
 
         # 4. Сравнение с порогом
         if mse > threshold:
-            # Формируем данные для лога
+            # Получаем детальный анализ
+            details = get_anomaly_details(sequence, reconstruction, threshold, HEADERS)
+
             anomaly_info = {
                 "mse_error": float(mse),
                 "threshold": float(threshold),
-                "metrics_snapshot": dict(zip(HEADERS, row))
+                "metrics_snapshot": dict(zip(HEADERS, row)),
+                **details  # Включаем score, feature и series_id в отчет
             }
-            # Вызываем лог. Тип события по умолчанию направит в logs/online
-            log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED",args=args)
+            log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED", args=args)
 
 
 def handle_metrics_for_collect(metrics, args):
