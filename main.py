@@ -11,6 +11,7 @@ import collections
 import pandas as pd
 import json
 import matplotlib.pyplot as plt
+import socket
 
 from core.anomaly_detector import AnomalyDetector
 from core.sniffer import Sniffer
@@ -36,13 +37,22 @@ logger = logging.getLogger(__name__)
 data_buffer = collections.deque(maxlen=None)
 threshold = None
 
+def send_alert_to_remote(anomaly_data, host, port):
+    """Отправка JSON алертов по TCP сокету."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(2.0) # Чтобы программа не зависла, если сервер лежит
+            s.connect((host, port))
+            s.sendall(json.dumps(anomaly_data).encode('utf-8'))
+    except Exception as e:
+        logger.error(f"Не удалось отправить алерт на {host}:{port}: {e}")
 
-def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED"):
+def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
     """
-    Запись данных об аномалии в JSON-файл с распределением по папкам.
+    Запись данных об аномалии в JSON-файл и опциональная отправка на удаленный сервер.
     """
     try:
-        # Определяем целевую папку в зависимости от типа события
+        # 1. Логика записи в файл (остается прежней)
         if event_type == "OFFLINE_DETECTION":
             log_dir = os.path.join("logs", "offline")
         else:
@@ -50,11 +60,9 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED"):
 
         os.makedirs(log_dir, exist_ok=True)
 
-        # Формируем имя файла (по дате)
         filename = datetime.now().strftime("anomaly_%Y-%m-%d.json")
         filepath = os.path.join(log_dir, filename)
 
-        # Формат записи остается идентичным вашему стандарту
         record = {
             "timestamp": datetime.now().isoformat(),
             "level": "CRITICAL",
@@ -66,11 +74,18 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED"):
         with open(filepath, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
+        # Вывод в консоль
         if event_type != "OFFLINE_DETECTION":
             logger.warning(f"!!! ONLINE ANOMALY: MSE {anomaly_data['mse_error']:.4f}")
 
+        # 2. НОВОЕ: Отправка на удаленный сервер, если аргументы переданы
+        if args and getattr(args, 'remote_host', None) and getattr(args, 'remote_port', None):
+            send_alert_to_remote(record, args.remote_host, args.remote_port)
+
     except Exception as e:
-        logger.error(f"Ошибка при записи лога: {e}")
+        logger.error(f"Ошибка при логировании аномалии: {e}")
+
+
 
 
 def handle_metrics_for_test(metrics, processor, detector, args):
@@ -135,7 +150,7 @@ def handle_metrics_for_test(metrics, processor, detector, args):
                 "metrics_snapshot": dict(zip(HEADERS, row))
             }
             # Вызываем лог. Тип события по умолчанию направит в logs/online
-            log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED")
+            log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED",args=args)
 
 
 def handle_metrics_for_collect(metrics, args):
@@ -250,7 +265,7 @@ def run_file_validation(args, processor, detector):
                 "mse_error": float(mse_errors[idx]),
                 "threshold": float(threshold_val)
             }
-            log_anomaly(anomaly_info, event_type="OFFLINE_DETECTION")
+            log_anomaly(anomaly_info, event_type="OFFLINE_DETECTION",args=args)
         logger.info("Сохранение завершено.")
 
     # --- Построение графика ---
@@ -339,6 +354,8 @@ def main():
     parser.add_argument('-s', '--scaler_path', default='scaler.pkl', help="Путь к скейлеру.")
     parser.add_argument('-thr', '--threshold_file', default='threshold.txt', help="Путь к порогу.")
     parser.add_argument('--show', action='store_true', help='Показать график после detect-offline')
+    parser.add_argument('--remote-host', help="IP адрес сервера для отправки алертов")
+    parser.add_argument('--remote-port', type=int, help="Порт сервера для отправки алертов")
 
     args = parser.parse_args()
 
