@@ -306,37 +306,76 @@ def run_file_validation(args, processor, detector):
 def main():
     global data_buffer, threshold
 
-    # 1. Аргументы командной строки
     parser = argparse.ArgumentParser(description="Диплом: Детектор аномалий (CNN-LSTM Autoencoder).")
-    parser.add_argument('mode', choices=['collect', 'train', 'test', 'validate'],
-                        help="Режим работы: collect (сбор), train (обучение), test (live), validate (файл).")
+    # ОБНОВЛЕНО: Новые названия режимов
+    parser.add_argument('mode', choices=['collect', 'train', 'detect-online', 'detect-offline'],
+                        help="Режим работы: collect (сбор), train (обучение), detect-online (live), detect-offline (файл).")
 
-    parser.add_argument('-i', '--interface', default='eth0', help="Сетевой интерфейс (для collect/test).")
+    parser.add_argument('-i', '--interface', default='eth0', help="Сетевой интерфейс (для collect/detect-online).")
     parser.add_argument('-n', '--network', default='192.168.1.0/24', help="CIDR локальной сети.")
     parser.add_argument('-t', '--interval', type=int, default=5, help="Интервал сбора (сек).")
-    parser.add_argument('-d', '--data-file', default='training_data.csv', help="Файл данных (csv).")
+    parser.add_argument('-d', '--data-file', default='training_data.csv', help="Файл данных (csv для offline).")
     parser.add_argument('-ts', '--time_step', type=int, default=10, help="Длина окна последовательности.")
     parser.add_argument('-e', '--epochs', type=int, default=50, help="Эпохи обучения.")
     parser.add_argument('-b', '--batch_size', type=int, default=64, help="Размер батча.")
     parser.add_argument('-m', '--model_path', default='anomaly_detector_model.keras', help="Путь к модели.")
     parser.add_argument('-s', '--scaler_path', default='scaler.pkl', help="Путь к скейлеру.")
     parser.add_argument('-thr', '--threshold_file', default='threshold.txt', help="Путь к порогу.")
-    parser.add_argument('--show', action='store_true', help='Показать график на экране после валидации')
+    parser.add_argument('--show', action='store_true', help='Показать график после detect-offline')
 
     args = parser.parse_args()
 
-    # Инициализация компонентов
     processor = DataProcessor()
     detector = AnomalyDetector(time_step=args.time_step, num_features=NUM_FEATURES)
 
-    # --- ВЫБОР РЕЖИМА ---
-
-    if args.mode == 'validate':
-        # Режим проверки файла (без сниффера)
+    if args.mode == 'detect-offline':
+        # Переименованный режим validate
         if not os.path.exists(args.data_file):
-            logger.error(f"Файл данных не найден: {args.data_file}")
+            logger.error(f"Файл не найден: {args.data_file}")
             return
         run_file_validation(args, processor, detector)
+
+    elif args.mode == 'detect-online':
+        # Новый режим реального времени
+        logger.info(f"--- ЗАПУСК РЕЖИМА DETECT-ONLINE (Интерфейс: {args.interface}) ---")
+
+        # Загрузка компонентов ИИ
+        detector.load_model(args.model_path)
+        processor.scaler = detector.load_scaler(args.scaler_path)
+
+        if detector.model is None or processor.scaler is None:
+            logger.error("Необходимые файлы (модель/скейлер) отсутствуют.")
+            return
+
+        # Загрузка порога
+        try:
+            with open(args.threshold_file, 'r') as f:
+                threshold = float(f.read().strip())
+            logger.info(f"Порог детекции: {threshold:.6f}")
+        except Exception:
+            logger.error("Файл порога не найден. Проведите обучение (train).")
+            return
+
+        # Буфер для формирования временного окна
+        data_buffer = collections.deque(maxlen=args.time_step)
+
+        # Запуск захвата трафика. Мы используем handle_metrics_for_test,
+        # так как она уже реализует логику накопления буфера и вызова детектора.
+        sniffer = Sniffer(
+            interface=args.interface,
+            network_cidr=args.network,
+            time_interval=args.interval,
+            callback=lambda m: handle_metrics_for_test(m, processor, detector, args)
+        )
+        sniffer.start_sniffing()
+
+        logger.info("Сенсор активен. Ожидание аномалий...")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Завершение работы...")
+            sniffer.stop_sniffing()
 
     elif args.mode == 'train':
         # Режим обучения
