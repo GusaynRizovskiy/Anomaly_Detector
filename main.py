@@ -12,7 +12,6 @@ import pandas as pd
 import json
 import matplotlib.pyplot as plt
 import socket
-
 from core.anomaly_detector import AnomalyDetector
 from core.sniffer import Sniffer
 from core.data_processor import DataProcessor
@@ -558,6 +557,24 @@ def main():
         except KeyboardInterrupt:
             logger.info("Остановка сбора.")
             sniffer.stop_sniffing()
+    # В блоке argparse добавьте:
+    # parser.add_argument('--labeled_file', type=str, help='Путь к файлу с метками для оценки')
+
+    if args.mode == 'evaluate':
+        # 1. Загружаем данные без меток (для предсказания)
+        data_to_pred = processor.load_data(args.data_file)
+
+        # 2. Загружаем файл с метками
+        labeled_df = pd.read_csv(args.labeled_file)
+        y_true = labeled_df['is_anomaly'].values  # Берем колонку с метками
+
+        # Убеждаемся, что размерности совпадают
+        if len(data_to_pred) != len(y_true):
+            # Если используете последовательности (LSTM), y_true нужно укоротить на time_step
+            y_true = y_true[args.time_step - 1:]
+
+        # 3. Запускаем оценку
+        detector.evaluate_model(data_to_pred, y_true, threshold=args.threshold)
 
 
 if __name__ == "__main__":

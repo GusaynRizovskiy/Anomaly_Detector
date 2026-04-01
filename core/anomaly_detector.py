@@ -1,6 +1,5 @@
 # anomaly_sniffer/core/anomaly_detector.py
 # -*- coding: utf-8 -*-
-import os
 import numpy as np
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.layers import Input, Conv1D, LSTM, RepeatVector
@@ -9,8 +8,10 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import pickle
 import logging
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-import matplotlib.pyplot as plt
 import os
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc, precision_recall_curve, confusion_matrix, classification_report
+import seaborn as sns
 
 logger = logging.getLogger(__name__)
 
@@ -136,3 +137,43 @@ class AnomalyDetector:
         except Exception as e:
             logger.error(f"Ошибка загрузки нормализатора: {e}")
             return None
+
+    def evaluate_model(self, test_data_scaled, y_true, threshold):
+        """
+        Расчет метрик и построение графиков.
+        test_data_scaled: нормализованные данные (без меток)
+        y_true: реальные метки (0 или 1) из вашего нового файла
+        threshold: пороговое значение MSE
+        """
+        # 1. Получаем ошибки реконструкции
+        reconstructions = self.model.predict(test_data_scaled)
+        mse = np.mean(np.power(test_data_scaled - reconstructions, 2), axis=(1, 2))
+
+        # 2. Предсказание (если MSE > порога, то 1, иначе 0)
+        y_pred = [1 if e > threshold else 0 for e in mse]
+
+        # --- ГРАФИК 1: Confusion Matrix ---
+        cm = confusion_matrix(y_true, y_pred)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+        plt.title("Матрица ошибок (Confusion Matrix)")
+        plt.ylabel('Реальные метки')
+        plt.xlabel('Предсказанные метки')
+        plt.show()
+
+        # --- ГРАФИК 2: ROC-кривая ---
+        fpr, tpr, _ = roc_curve(y_true, mse)
+        roc_auc = auc(fpr, tpr)
+
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr, color='darkorange', label=f'ROC curve (area = {roc_auc:.2f})')
+        plt.plot([0, 1], [0, 1], color='navy', linestyle='--')
+        plt.xlabel('False Positive Rate (Ложные тревоги)')
+        plt.ylabel('True Positive Rate (Полнота)')
+        plt.title('ROC-кривая')
+        plt.legend(loc="lower right")
+        plt.show()
+
+        # Вывод текстового отчета
+        print("\nОтчет о классификации:")
+        print(classification_report(y_true, y_pred))
