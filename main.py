@@ -395,17 +395,22 @@ def main():
     parser.add_argument('-ts', '--time_step', type=int, default=10, help="Длина окна последовательности.")
     parser.add_argument('-e', '--epochs', type=int, default=50, help="Эпохи обучения.")
     parser.add_argument('-b', '--batch_size', type=int, default=64, help="Размер батча.")
-    parser.add_argument('-m', '--model_path', default='anomaly_detector_model.keras', help="Путь к модели.")
-    parser.add_argument('-s', '--scaler_path', default='scaler.pkl', help="Путь к скейлеру.")
-    parser.add_argument('-thr', '--threshold_file', default='threshold.txt', help="Путь к порогу.")
+    parser.add_argument('-m', '--model_path', default='Scaler/anomaly_detector_model.keras', help="Путь к модели.")
     parser.add_argument('--show', action='store_true', help='Показать график после detect-offline')
     parser.add_argument('--remote-host', help="IP адрес сервера для отправки алертов")
     parser.add_argument('--remote-port', type=int, help="Порт сервера для отправки алертов")
+    parser.add_argument('-s', '--scaler_path', default='Scaler/scaler.pkl', help="Путь к скейлеру.")
+    parser.add_argument('-thr', '--threshold_file', default='Threshold/threshold.txt', help="Путь к порогу.")
 
     args = parser.parse_args()
 
     processor = DataProcessor()
     detector = AnomalyDetector(time_step=args.time_step, num_features=NUM_FEATURES)
+
+    def ensure_directories():
+        """Создает структуру папок в корне проекта."""
+        for d in ["Scaler", "Threshold", "plots", "logs"]:
+            os.makedirs(d, exist_ok=True)
 
     if args.mode == 'detect-offline':
         # Переименованный режим validate
@@ -456,44 +461,40 @@ def main():
             logger.info("Завершение работы...")
             sniffer.stop_sniffing()
 
+
     elif args.mode == 'train':
-        # Режим обучения
+
+        ensure_directories()  # Создаем папки перед сохранением
+
         logger.info(f"Запуск обучения на файле: {args.data_file}")
 
-        # Загрузка + Fit Scaler
         raw_data = processor.load_and_preprocess_training_data(args.data_file, fit_scaler=True)
+
         if raw_data is None: return
 
-        # Сохранение скейлера
+        # СОХРАНЕНИЕ СКЕЙЛЕРА
+
         detector.save_scaler(processor.scaler, args.scaler_path)
 
-        # Создание последовательностей
         X_train = processor.create_sequences(raw_data, args.time_step)
 
-        if X_train.size == 0:
-            logger.error("Недостаточно данных для обучения.")
-            return
-
-        logger.info(f"Размер обучающей выборки: {X_train.shape}")
-
-        # Обучение
         detector.train_model(X_train, args.epochs, args.batch_size, args.model_path)
 
-        # Расчет порога (Оптимизированный)
-        logger.info("Расчет порога ошибки...")
+        # РАСЧЕТ И СОХРАНЕНИЕ ПОРОГА
+
         reconstructions = detector.model.predict(X_train, verbose=0)
-        # Быстрый расчет MSE через numpy
+
         mse_train = np.mean(np.power(X_train - reconstructions, 2), axis=(1, 2))
 
-        # Берем 99-й перцентиль
         new_threshold = np.percentile(mse_train, 99)
 
-        try:
-            with open(args.threshold_file, 'w') as f:
-                f.write(str(new_threshold))
-            logger.info(f"Порог установлен и сохранен: {new_threshold:.6f}")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения порога: {e}")
+        with open(args.threshold_file, 'w') as f:
+
+            f.write(str(new_threshold))
+
+        logger.info(f"Скейлер -> {args.scaler_path}")
+
+        logger.info(f"Порог ({new_threshold:.6f}) -> {args.threshold_file}")
 
     elif args.mode == 'collect':
         # Режим сбора данных
