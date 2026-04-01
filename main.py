@@ -495,44 +495,6 @@ def main():
         except Exception as e:
             logger.error(f"Ошибка сохранения порога: {e}")
 
-    elif args.mode == 'test':
-        # Режим тестирования (Live)
-        logger.info("Запуск режима Live Detection.")
-
-        # Загрузки
-        detector.load_model(args.model_path)
-        processor.scaler = detector.load_scaler(args.scaler_path)
-        if detector.model is None or processor.scaler is None:
-            return
-
-        try:
-            with open(args.threshold_file, 'r') as f:
-                threshold = float(f.read().strip())
-            logger.info(f"Порог загружен: {threshold:.6f}")
-        except Exception:
-            logger.error("Файл порога не найден. Сначала запустите train.")
-            return
-
-        # Инициализация буфера
-        data_buffer = collections.deque(maxlen=args.time_step)
-
-        # Запуск сниффера
-        sniffer = Sniffer(
-            interface=args.interface,
-            network_cidr=args.network,
-            time_interval=args.interval,
-            callback=lambda m: handle_metrics_for_test(m, processor, detector, args)
-        )
-        sniffer.start_sniffing()
-
-        logger.info("Детектор работает. Нажмите Ctrl+C для остановки.")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Остановка...")
-            sniffer.stop_sniffing()
-
     elif args.mode == 'collect':
         # Режим сбора данных
         logger.info(f"Сбор данных в файл: {args.data_file}")
@@ -557,24 +519,8 @@ def main():
         except KeyboardInterrupt:
             logger.info("Остановка сбора.")
             sniffer.stop_sniffing()
-    # В блоке argparse добавьте:
-    # parser.add_argument('--labeled_file', type=str, help='Путь к файлу с метками для оценки')
 
-    if args.mode == 'evaluate':
-        # 1. Загружаем данные без меток (для предсказания)
-        data_to_pred = processor.load_data(args.data_file)
 
-        # 2. Загружаем файл с метками
-        labeled_df = pd.read_csv(args.labeled_file)
-        y_true = labeled_df['is_anomaly'].values  # Берем колонку с метками
-
-        # Убеждаемся, что размерности совпадают
-        if len(data_to_pred) != len(y_true):
-            # Если используете последовательности (LSTM), y_true нужно укоротить на time_step
-            y_true = y_true[args.time_step - 1:]
-
-        # 3. Запускаем оценку
-        detector.evaluate_model(data_to_pred, y_true, threshold=args.threshold)
 
 
 if __name__ == "__main__":
