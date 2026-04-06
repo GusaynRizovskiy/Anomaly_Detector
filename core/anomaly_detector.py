@@ -70,25 +70,32 @@ class AnomalyDetector:
             )
 
             # Добавляем визуализацию результатов для защиты
-            self._save_training_plot(history)
+            self._save_training_plot(history, show=False)
 
             logger.info("Обучение завершено. Модель сохранена, графики построены.")
         except Exception as e:
             logger.error(f"Ошибка в процессе обучения: {e}")
 
-    def _save_training_plot(self, history):
-        """Вспомогательный метод для построения графиков."""
-        os.makedirs('plots', exist_ok=True)
-        plt.figure(figsize=(8, 5))
-        plt.plot(history.history['loss'], label='Training Loss')
-        plt.plot(history.history['val_loss'], label='Validation Loss')
-        plt.title('Training and Validation Loss')
-        plt.xlabel('Epochs')
-        plt.ylabel('MSE Loss')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig('plots/training_history.png')
-        plt.close()
+        # anomaly_detector.py (фрагмент изменений)
+
+        def _save_training_plot(self, history, show=False):
+            """Вспомогательный метод для построения графиков."""
+            os.makedirs('plots', exist_ok=True)
+            plt.figure(figsize=(8, 5))
+            plt.plot(history.history['loss'], label='Training Loss')
+            plt.plot(history.history['val_loss'], label='Validation Loss')
+            plt.title('Training and Validation Loss')
+            plt.xlabel('Epochs')
+            plt.ylabel('MSE Loss')
+            plt.legend()
+            plt.grid(True)
+            plot_path = 'plots/training_history.png'
+            plt.savefig(plot_path)
+            if show:
+                plt.show()
+            else:
+                plt.close()
+            logger.info(f"График обучения сохранён: {plot_path}")
 
     def calculate_reconstruction_error(self, X):
         """Вычисляет ошибку реконструкции для одного образца."""

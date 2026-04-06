@@ -15,6 +15,9 @@ import socket
 from core.anomaly_detector import AnomalyDetector
 from core.sniffer import Sniffer
 from core.data_processor import DataProcessor
+from sklearn.metrics import (confusion_matrix, classification_report,
+                             roc_curve, auc, precision_recall_curve)
+import seaborn as sns
 
 # Настройка заголовков (должны совпадать с порядком в сниффере)
 HEADERS = [
@@ -55,6 +58,75 @@ def get_severity(mse, threshold):
     else:
         return "INFO"
 
+
+def evaluate_and_plot(y_true, y_pred, mse_scores, threshold, output_prefix="plots/evaluation"):
+    """
+    Вычисляет метрики и строит:
+    - Confusion Matrix
+    - ROC-кривую
+    - (опционально) Precision-Recall кривую
+    Сохраняет графики в файлы.
+    """
+    os.makedirs('plots', exist_ok=True)
+
+    # 1. Матрица ошибок
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.title('Confusion Matrix')
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
+    plt.savefig(f'{output_prefix}_confusion_matrix.png')
+    plt.close()
+
+    # 2. ROC-кривая
+    fpr, tpr, _ = roc_curve(y_true, mse_scores)  # используем непрерывные MSE для ROC
+    roc_auc = auc(fpr, tpr)
+    plt.figure(figsize=(7, 5))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic (ROC)')
+    plt.legend(loc="lower right")
+    plt.grid(True)
+    plt.savefig(f'{output_prefix}_roc_curve.png')
+    plt.close()
+
+    # 3. Precision-Recall кривая (дополнительно)
+    precision, recall, _ = precision_recall_curve(y_true, mse_scores)
+    plt.figure(figsize=(7, 5))
+    plt.plot(recall, precision, color='green', lw=2)
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall curve')
+    plt.grid(True)
+    plt.savefig(f'{output_prefix}_pr_curve.png')
+    plt.close()
+
+    # Вывод отчёта в консоль
+    print("\n" + "=" * 50)
+    print("ОЦЕНКА КАЧЕСТВА МОДЕЛИ НА ТЕСТОВЫХ ДАННЫХ")
+    print("=" * 50)
+    print(f"Порог: {threshold:.6f}")
+    print(f"True Positives:  {cm[1, 1]}")
+    print(f"False Positives: {cm[0, 1]}")
+    print(f"False Negatives: {cm[1, 0]}")
+    print(f"True Negatives:  {cm[0, 0]}")
+    print("\nClassification Report:")
+    print(classification_report(y_true, y_pred, target_names=['Normal', 'Anomaly']))
+    print(f"ROC AUC: {roc_auc:.4f}")
+    print("=" * 50 + "\n")
+
+    # Сохраним метрики в текстовый файл
+    with open(f'{output_prefix}_metrics.txt', 'w') as f:
+        f.write(f"Threshold: {threshold}\n")
+        f.write(f"ROC AUC: {roc_auc}\n")
+        f.write(classification_report(y_true, y_pred, target_names=['Normal', 'Anomaly']))
+        f.write(f"\nConfusion Matrix:\n{cm}\n")
+    logger.info(f"Метрики сохранены в {output_prefix}_metrics.txt")
 
 last_anomaly_timestamp = None
 anomaly_series_id = 0
@@ -291,6 +363,44 @@ def run_file_validation(args, processor, detector):
         reconstructions = detector.model.predict(X_val, verbose=1)
         # MSE для каждого окна (усреднение по времени и признакам)
         mse_errors = np.mean(np.power(X_val - reconstructions, 2), axis=(1, 2))
+        if args.labels:
+            logger.info(f"Загрузка файла истинных меток: {args.labels}")
+            try:
+                df_labels = pd.read_csv(args.labels)
+                # Определяем колонку с метками
+                label_col = None
+                for col in ['label', 'is_anomaly']:
+                    if col in df_labels.columns:
+                        label_col = col
+                        break
+                if label_col is None:
+                    logger.error("Файл меток должен содержать колонку 'label' или 'is_anomaly'")
+                    return
+
+                y_true_full = df_labels[label_col].values
+                expected_windows = len(mse_errors)
+
+                # Синхронизация: окна соответствуют последним элементам, поэтому первые (time_step-1) меток отбрасываем
+                if len(y_true_full) == expected_windows + (args.time_step - 1):
+                    y_true = y_true_full[args.time_step - 1:]
+                    logger.info(
+                        f"Синхронизация выполнена: использованы метки с {args.time_step - 1} по {len(y_true_full) - 1} "
+                        f"(отброшено первых {args.time_step - 1})")
+                elif len(y_true_full) == expected_windows:
+                    logger.warning(
+                        "Количество меток совпадает с количеством окон, но обычно должно быть на (time_step-1) больше. "
+                        "Предполагается, что метки уже синхронизированы с окнами.")
+                    y_true = y_true_full
+                else:
+                    logger.error(f"Несовпадение длины: меток {len(y_true_full)}, окон {expected_windows}. "
+                                 f"Ожидается {expected_windows + (args.time_step - 1)} или {expected_windows}.")
+                    return
+
+                y_pred = (mse_errors > threshold_val).astype(int)
+                evaluate_and_plot(y_true, y_pred, mse_errors, threshold_val,
+                                  output_prefix=f"plots/validation_{os.path.basename(args.data_file)}")
+            except Exception as e:
+                logger.error(f"Ошибка при оценке метрик: {e}")
     except Exception as e:
         logger.error(f"Ошибка при расчёте: {e}")
         return
@@ -401,6 +511,9 @@ def main():
     parser.add_argument('--remote-port', type=int, help="Порт сервера для отправки алертов")
     parser.add_argument('-s', '--scaler_path', default='Scaler/scaler.pkl', help="Путь к скейлеру.")
     parser.add_argument('-thr', '--threshold_file', default='Threshold/threshold.txt', help="Путь к порогу.")
+    parser.add_argument('--labels', help="Путь к CSV с колонкой 'label' (истинные метки для оценки)")
+    parser.add_argument('--show-plot', action='store_true', help='Показать график обучения (train)')
+
 
     args = parser.parse_args()
 
@@ -479,6 +592,13 @@ def main():
         X_train = processor.create_sequences(raw_data, args.time_step)
 
         detector.train_model(X_train, args.epochs, args.batch_size, args.model_path)
+
+        if args.show_plot:
+            # Загружаем сохранённый график и показываем его
+            img = plt.imread('plots/training_history.png')
+            plt.imshow(img)
+            plt.axis('off')
+            plt.show()
 
         # РАСЧЕТ И СОХРАНЕНИЕ ПОРОГА
 
