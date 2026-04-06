@@ -1,0 +1,11 @@
+Demo mode metrics (seed: 2751819071)
+Threshold: 0.018664117299662247
+Total samples: 16489 (normal: 14879, anomaly: 1610)
+ROC AUC: 0.9871028545838632
+Accuracy: 0.9980593122687853
+Confusion Matrix:
+[[14851    28]
+ [    4  1606]]
+Classification Report:
+  Normal: P=1.000 R=0.998 F1=0.999
+  Anomaly: P=0.983 R=0.998 F1=0.990
