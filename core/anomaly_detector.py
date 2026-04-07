@@ -17,17 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 class AnomalyDetector:
-    # ИЗМЕНЕНО: Добавлен num_features
     def __init__(self, time_step, num_features=1):
         self.model = None
         self.time_step = time_step
-        # НОВОЕ: Сохраняем количество признаков
         self.num_features = num_features
         self.loss_metric = mse_loss()
 
     def build_model(self):
         """Создание архитектуры нейронной сети."""
-        # ИЗМЕНЕНО: Форма входного слоя теперь (time_step, num_features)
         inputs = Input(shape=(self.time_step, self.num_features))
 
         # Энкодер
@@ -41,8 +38,6 @@ class AnomalyDetector:
         # Декодер
         x = LSTM(8, return_sequences=True, activation='relu')(x)
         x = LSTM(16, return_sequences=True, activation='relu')(x)
-
-        # ИЗМЕНЕНО: Выходной Conv1D слой должен реконструировать num_features каналов
         x = Conv1D(filters=self.num_features, kernel_size=3, padding='same', activation='linear')(x)
 
         self.model = Model(inputs=inputs, outputs=x)
@@ -59,7 +54,6 @@ class AnomalyDetector:
         ]
 
         try:
-            # Теперь сохраняем результат обучения в переменную history
             history = self.model.fit(
                 X_train, X_train,
                 epochs=epochs,
@@ -69,14 +63,11 @@ class AnomalyDetector:
                 verbose=2
             )
 
-            # Добавляем визуализацию результатов для защиты
             self._save_training_plot(history, show=False)
 
             logger.info("Обучение завершено. Модель сохранена, графики построены.")
         except Exception as e:
             logger.error(f"Ошибка в процессе обучения: {e}")
-
-        # anomaly_detector.py (фрагмент изменений)
 
         def _save_training_plot(self, history, show=False):
             """Вспомогательный метод для построения графиков."""
@@ -104,15 +95,12 @@ class AnomalyDetector:
             return 0
 
         reconstruction = self.model.predict(X, verbose=0)
-        # Для многомерных данных mse - это средняя ошибка по всем time_step и num_features
         mse = self.loss_metric(X, reconstruction).numpy()
         return mse
 
     def load_model(self, model_path):
         """Загрузка обученной модели."""
         try:
-            # Для корректной загрузки модели Keras часто не нужно явно указывать loss,
-            # но для автокодировщика это может быть полезно
             self.model = load_model(
                 model_path,
                 custom_objects={'mse_loss': mse_loss()}
@@ -152,14 +140,11 @@ class AnomalyDetector:
         y_true: реальные метки (0 или 1) из вашего нового файла
         threshold: пороговое значение MSE
         """
-        # 1. Получаем ошибки реконструкции
         reconstructions = self.model.predict(test_data_scaled)
         mse = np.mean(np.power(test_data_scaled - reconstructions, 2), axis=(1, 2))
 
-        # 2. Предсказание (если MSE > порога, то 1, иначе 0)
         y_pred = [1 if e > threshold else 0 for e in mse]
 
-        # --- ГРАФИК 1: Confusion Matrix ---
         cm = confusion_matrix(y_true, y_pred)
         plt.figure(figsize=(8, 6))
         sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
@@ -168,7 +153,6 @@ class AnomalyDetector:
         plt.xlabel('Предсказанные метки')
         plt.show()
 
-        # --- ГРАФИК 2: ROC-кривая ---
         fpr, tpr, _ = roc_curve(y_true, mse)
         roc_auc = auc(fpr, tpr)
 
@@ -181,6 +165,5 @@ class AnomalyDetector:
         plt.legend(loc="lower right")
         plt.show()
 
-        # Вывод текстового отчета
         print("\nОтчет о классификации:")
         print(classification_report(y_true, y_pred))
