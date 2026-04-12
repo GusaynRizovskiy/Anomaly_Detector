@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 import logging
+import joblib  
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -13,32 +15,35 @@ class DataProcessor:
         self.scaler = None
 
     def preprocess_data(self, data):
-        """Предварительная обработка и нормализация данных."""
-        if not isinstance(data, pd.DataFrame):
-            # Предполагаем, что данные приходят в виде списка или массива,
-            # и создаем DataFrame для удобства.
-            data = pd.DataFrame(data, columns=[f'metric_{i}' for i in range(len(data[0]))])
+        """Предварительная обработка и нормализация данных в реальном времени."""
+        # Приводим входные данные к 2D-массиву, если пришел одномерный список
+        if isinstance(data, (list, tuple)) and not isinstance(data[0], (list, tuple)):
+            data = [data]
 
-        # Удаляем временной столбец, если он есть
-        if data.columns[0].lower().startswith('time'):
+        if not isinstance(data, pd.DataFrame):
+            # Теперь мы уверены, что pandas создаст 1 строку и N столбцов
+            data = pd.DataFrame(data)
+
+        # Удаляем временной столбец, если он есть (по имени)
+        if isinstance(data.columns[0], str) and data.columns[0].lower().startswith('time'):
             data = data.iloc[:, 1:]
 
-        # Нормализация
+        # Критическая проверка для онлайн-режима
         if self.scaler is None:
+            logger.warning("Scaler не инициализирован! Применяется fit на лету (только для тестов).")
             self.scaler = MinMaxScaler()
             scaled_data = self.scaler.fit_transform(data)
         else:
+            # В боевом режиме используем ТОЛЬКО transform, применяя прошлые веса
             scaled_data = self.scaler.transform(data)
 
-        # ИЗМЕНЕНО: Возвращаем 2D массив (samples, num_features), а не плоский одномерный ряд
         return scaled_data
 
     def create_sequences(self, data, time_step):
         """Создание последовательностей для нейронной сети."""
         xs = []
         # data: 2D массив (samples, num_features)
-        for i in range(len(data) - time_step + 1):  # +1, чтобы не потерять последний возможный сэмпл
-            # ИЗМЕНЕНО: Выбираем все столбцы (:) для последовательности
+        for i in range(len(data) - time_step + 1):
             xs.append(data[i:(i + time_step), :])
 
         # Возвращаем 3D массив (samples, time_step, num_features)
@@ -47,37 +52,28 @@ class DataProcessor:
     def load_and_preprocess_training_data(self, file_path, fit_scaler=True):
         """Загрузка и нормализация данных для обучения."""
         try:
-            # ИЗМЕНЕНИЕ 1: sep=None и engine='python' позволяют Pandas самому найти разделитель (, или ;)
             data = pd.read_csv(file_path, sep=None, engine='python')
-
             logger.info(f"Загружен файл: {file_path}. Размер: {data.shape}")
 
-            # Диагностика: если столбцов мало, покажем, что считалось
             if data.shape[1] <= 1:
                 logger.error(f"ОШИБКА: Найдено столбцов: {data.shape[1]}. Ожидалось > 1.")
-                logger.error(f"Пример данных: {data.head()}")
-                logger.error("Проверьте разделитель в CSV файле.")
                 return None
 
-            # Удаляем столбец с датой/временем, если он есть (по названию или индексу)
-            # Проверяем, похож ли первый столбец на timestamp
-            first_col = data.columns[0].lower()
+            first_col = str(data.columns[0]).lower()
             if 'time' in first_col or 'date' in first_col:
                 data = data.iloc[:, 1:]
 
-            # Дополнительная проверка: остались ли данные после удаления времени
             if data.shape[1] == 0:
                 logger.error("После удаления метки времени не осталось данных.")
                 return None
 
-            # Нормализация
             if fit_scaler or self.scaler is None:
                 self.scaler = MinMaxScaler()
                 scaled_data = self.scaler.fit_transform(data)
+                logger.info("Scaler обучен на новых данных.")
             else:
                 scaled_data = self.scaler.transform(data)
 
-            # Возвращаем 2D массив
             return scaled_data
 
         except FileNotFoundError:
@@ -86,3 +82,24 @@ class DataProcessor:
         except Exception as e:
             logger.error(f"Ошибка загрузки/обработки данных: {e}")
             return None
+
+    # НОВЫЕ МЕТОДЫ ДЛЯ СОХРАНЕНИЯ КОНТЕКСТА (Обязательно для диплома)
+    def save_scaler(self, path="scaler.pkl"):
+        """Сохраняет обученный scaler на диск."""
+        if self.scaler is not None:
+            # Создаем директорию, если её нет
+            os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
+            joblib.dump(self.scaler, path)
+            logger.info(f"Scaler успешно сохранен в {path}")
+        else:
+            logger.error("Попытка сохранить пустой scaler!")
+
+    def load_scaler(self, path="scaler.pkl"):
+        """Загружает обученный scaler с диска."""
+        if os.path.exists(path):
+            self.scaler = joblib.load(path)
+            logger.info(f"Scaler успешно загружен из {path}")
+            return True
+        else:
+            logger.error(f"Файл scaler'а не найден: {path}")
+            return False

@@ -110,29 +110,6 @@ class AnomalyDetector:
             logger.error(f"Не удалось загрузить модель с {model_path}: {e}")
             self.model = None
 
-    def save_scaler(self, scaler, scaler_path):
-        """Сохранение объекта нормализатора."""
-        try:
-            with open(scaler_path, 'wb') as f:
-                pickle.dump(scaler, f)
-            logger.info(f"Нормализатор сохранен в {scaler_path}")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения нормализатора: {e}")
-
-    def load_scaler(self, scaler_path):
-        """Загрузка объекта нормализатора."""
-        try:
-            with open(scaler_path, 'rb') as f:
-                scaler = pickle.load(f)
-            logger.info(f"Нормализатор загружен из {scaler_path}")
-            return scaler
-        except FileNotFoundError:
-            logger.error(f"Файл нормализатора не найден: {scaler_path}")
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка загрузки нормализатора: {e}")
-            return None
-
     def evaluate_model(self, test_data_scaled, y_true, threshold):
         """
         Расчет метрик и построение графиков.

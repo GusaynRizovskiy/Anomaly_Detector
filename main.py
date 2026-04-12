@@ -482,6 +482,10 @@ def run_file_validation(args, processor, detector):
 def main():
     global data_buffer, threshold
 
+    SCALER_DIR = "scaler"
+    SCALER_PATH = os.path.join(SCALER_DIR, "scaler.pkl")
+    os.makedirs(SCALER_DIR, exist_ok=True)
+
     parser = argparse.ArgumentParser(description="Диплом: Детектор аномалий (CNN-LSTM Autoencoder).")
     # ОБНОВЛЕНО: Новые названия режимов
     parser.add_argument('mode', choices=['collect', 'train', 'detect-online', 'detect-offline'],
@@ -539,9 +543,10 @@ def main():
         # Новый режим реального времени
         logger.info(f"--- ЗАПУСК РЕЖИМА DETECT-ONLINE (Интерфейс: {args.interface}) ---")
 
-        # Загрузка компонентов ИИ
         detector.load_model(args.model_path)
-        processor.scaler = detector.load_scaler(args.scaler_path)
+        if not processor.load_scaler(SCALER_PATH):
+            logger.error("Критическая ошибка: файл нормализации не найден!")
+            return
 
         if detector.model is None or processor.scaler is None:
             logger.error("Необходимые файлы (модель/скейлер) отсутствуют.")
@@ -595,6 +600,8 @@ def main():
         X_train = processor.create_sequences(raw_data, args.time_step)
 
         detector.train_model(X_train, args.epochs, args.batch_size, args.model_path)
+
+        processor.save_scaler(SCALER_PATH)
 
         if args.show_plot:
             # Загружаем сохранённый график и показываем его
