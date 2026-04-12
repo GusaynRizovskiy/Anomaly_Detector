@@ -240,7 +240,7 @@ def handle_metrics_for_test(metrics, processor, detector, args):
                 "network_context": metrics['metadata'],  # ТВОИ НОВЫЕ ПОЛЯ ЗДЕСЬ
                 **details
             }
-            log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED", args=args)
+            log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED", args=args, transmitter=None)
 
 
 def handle_metrics_for_collect(metrics, args):
@@ -506,11 +506,13 @@ def main():
 
     # Инициализируем передатчик, если указаны параметры
     transmitter = None
-    if args.remote_host:  # Можно добавить новые аргументы для логина/пароля
+    if args.remote_host:
         transmitter = RemoteTransmitter(
             base_url=f"https://{args.remote_host}:{args.remote_port}",
-            login="test-ids",
-            password="!QAZ2wsx"
+            # Используем os.getenv. Второй аргумент — значение по умолчанию,
+            # если в .env ничего не найдется.
+            login=os.getenv("REMOTE_LOGIN", "test-ids"),
+            password=os.getenv("REMOTE_PASSWORD", "!QAZ2wsx")
         )
 
 

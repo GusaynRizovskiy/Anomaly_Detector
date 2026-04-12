@@ -1,8 +1,13 @@
+import datetime
+import json
+
 import requests
 import websocket
 import threading
 import os
 from dotenv import load_dotenv
+
+from main import get_severity, logger
 
 # Загружаем переменные из .env файла
 load_dotenv()
