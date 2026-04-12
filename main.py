@@ -12,12 +12,14 @@ import pandas as pd
 import json
 import matplotlib.pyplot as plt
 import socket
+import seaborn as sns
 from core.anomaly_detector import AnomalyDetector
 from core.sniffer import Sniffer
 from core.data_processor import DataProcessor
 from sklearn.metrics import (confusion_matrix, classification_report,
                              roc_curve, auc, precision_recall_curve)
-import seaborn as sns
+from core.remote_transmitter import RemoteTransmitter
+
 
 # Настройка заголовков (должны совпадать с порядком в сниффере)
 HEADERS = [
@@ -162,7 +164,7 @@ def get_anomaly_details(sequence, reconstruction, threshold):
         "feature_contribution_value": float(diff[top_feature_idx]),
         "series_id": anomaly_series_id
     }
-def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
+def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None,transmitter=None):
     """
     Запись данных об аномалии в JSON-файл и опциональная отправка на удаленный сервер.
     """
@@ -190,8 +192,8 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
         # Вывод в консоль
-        if event_type != "OFFLINE_DETECTION":
-            logger.warning(f"!!! ONLINE ANOMALY: MSE {anomaly_data['mse_error']:.4f}")
+        if transmitter and event_type != "OFFLINE_DETECTION":
+            threading.Thread(target=transmitter.send_event, args=(anomaly_data,), daemon=True).start()
 
         # 2. НОВОЕ: Отправка на удаленный сервер, если аргументы переданы
         if args and getattr(args, 'remote_host', None) and getattr(args, 'remote_port', None):
@@ -499,6 +501,16 @@ def main():
 
     processor = DataProcessor()
     detector = AnomalyDetector(time_step=args.time_step, num_features=NUM_FEATURES)
+
+    # Инициализируем передатчик, если указаны параметры
+    transmitter = None
+    if args.remote_host:  # Можно добавить новые аргументы для логина/пароля
+        transmitter = RemoteTransmitter(
+            base_url=f"https://{args.remote_host}:{args.remote_port}",
+            login="test-ids",
+            password="!QAZ2wsx"
+        )
+
 
     def ensure_directories():
         """Создает структуру папок в корне проекта."""
