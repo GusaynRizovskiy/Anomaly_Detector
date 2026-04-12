@@ -7,6 +7,7 @@ from scapy.layers.inet import IP, UDP, TCP
 from scapy.layers.l2 import Ether
 import ipaddress
 import collections
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,8 @@ class Sniffer:
             'total': {'packets': 0, 'loopback': 0, 'multicast': 0, 'udp': 0, 'tcp': 0, 'options': 0, 'fragment': 0,
                       'fin': 0, 'syn': 0},
             'input': {'packets': 0, 'udp': 0, 'tcp': 0, 'options': 0, 'fragment': 0, 'fin': 0, 'syn': 0},
-            'output': {'packets': 0, 'udp': 0, 'tcp': 0, 'options': 0, 'fragment': 0, 'fin': 0, 'syn': 0}
+            'output': {'packets': 0, 'udp': 0, 'tcp': 0, 'options': 0, 'fragment': 0, 'fin': 0, 'syn': 0},
+            'current_flows': Counter()
         }
 
     def packet_callback(self, packet):
@@ -49,6 +51,19 @@ class Sniffer:
         self.packet_counts['total']['packets'] += 1
 
         if packet.haslayer(IP):
+            if packet.haslayer(IP):
+                ip_layer = packet[IP]
+                proto = "TCP" if packet.haslayer(TCP) else "UDP" if packet.haslayer(UDP) else "Other"
+
+                # Формируем ключ потока
+                flow_key = (
+                    ip_layer.src,
+                    packet[TCP].sport if packet.haslayer(TCP) else (packet[UDP].sport if packet.haslayer(UDP) else 0),
+                    ip_layer.dst,
+                    packet[TCP].dport if packet.haslayer(TCP) else (packet[UDP].dport if packet.haslayer(UDP) else 0),
+                    proto
+                )
+                self.packet_counts['current_flows'][flow_key] += 1
             src_ip = packet[IP].src
             dst_ip = packet[IP].dst
 
@@ -115,7 +130,20 @@ class Sniffer:
                 self.packet_counts['total']['intensivity'] = 0
                 self.packet_counts['input']['intensivity'] = 0
                 self.packet_counts['output']['intensivity'] = 0
+            # 1. Находим самый активный поток (тот, у кого больше всего пакетов)
+            top_flow = ("0.0.0.0", 0, "0.0.0.0", 0, "None")
+            if self.packet_counts['current_flows']:
+                # .most_common(1) вернет [((src, sport, dst, dport, proto), count)]
+                top_flow = self.packet_counts['current_flows'].most_common(1)[0][0]
 
+            # 2. Сохраняем метаданные в отдельный ключ, чтобы main.py их увидел
+            self.packet_counts['metadata'] = {
+                "src_ip": top_flow[0],
+                "src_port": top_flow[1],
+                "dst_ip": top_flow[2],
+                "dst_port": top_flow[3],
+                "protocol": top_flow[4]
+            }
             # Передача агрегированных метрик в основной поток
             self.callback(self.packet_counts)
 

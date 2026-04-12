@@ -29,6 +29,7 @@ HEADERS = [
     'output_options', 'output_fragment', 'output_fin', 'output_syn',
     'output_intensity'
 ]
+META_HEADERS = ['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol']
 NUM_FEATURES = len(HEADERS)
 
 # Настройка логирования
@@ -201,95 +202,66 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None):
         logger.error(f"Ошибка при логировании аномалии: {e}")
 
 
-
-
 def handle_metrics_for_test(metrics, processor, detector, args):
-    """
-    Обработка метрик в реальном времени для режима detect-online.
-    """
     global data_buffer, threshold
 
-    # 1. Превращаем словарь метрик в плоский список (вектор)
+    # 1. Извлекаем только 26 числовых метрик для нейросети
     row = []
-    # Важно: порядок извлечения должен строго соответствовать HEADERS
-    row.append(metrics['total']['packets'])
-    row.append(metrics['total']['loopback'])
-    row.append(metrics['total']['multicast'])
-    row.append(metrics['total']['udp'])
-    row.append(metrics['total']['tcp'])
-    row.append(metrics['total']['options'])
-    row.append(metrics['total']['fragment'])
-    row.append(metrics['total']['fin'])
-    row.append(metrics['total']['syn'])
-    row.append(metrics['total']['intensivity'])
+    for h in HEADERS:
+        if h.startswith('total_'):
+            row.append(metrics['total'].get(h.replace('total_', ''), 0))
+        elif h.startswith('input_'):
+            row.append(metrics['input'].get(h.replace('input_', ''), 0))
+        elif h.startswith('output_'):
+            row.append(metrics['output'].get(h.replace('output_', ''), 0))
 
-    row.append(metrics['input']['packets'])
-    row.append(metrics['input']['udp'])
-    row.append(metrics['input']['tcp'])
-    row.append(metrics['input']['options'])
-    row.append(metrics['input']['fragment'])
-    row.append(metrics['input']['fin'])
-    row.append(metrics['input']['syn'])
-    row.append(metrics['input']['intensivity'])
-
-    row.append(metrics['output']['packets'])
-    row.append(metrics['output']['udp'])
-    row.append(metrics['output']['tcp'])
-    row.append(metrics['output']['options'])
-    row.append(metrics['output']['fragment'])
-    row.append(metrics['output']['fin'])
-    row.append(metrics['output']['syn'])
-    row.append(metrics['output']['intensivity'])
-
-    # 2. Нормализация данных
-    # Подготавливаем данные для скейлера (ожидает 2D массив)
+    # 2. Нейросеть работает только с числами
     scaled_row = processor.scaler.transform([row])[0]
     data_buffer.append(scaled_row)
 
-    # 3. Проверка: накопилось ли достаточно данных для окна (time_step)
     if len(data_buffer) == args.time_step:
         sequence = np.array([list(data_buffer)])
-
-        # Предсказание (реконструкция)
         reconstruction = detector.model.predict(sequence, verbose=0)
-
-        # Расчет ошибки MSE
         mse = np.mean(np.power(sequence - reconstruction, 2))
 
-        # 4. Сравнение с порогом
         if mse > threshold:
-            # Получаем детальный анализ
-            details = get_anomaly_details(sequence, reconstruction, threshold, HEADERS)
+            # Исправляем вызов: убираем лишний HEADERS, если он не нужен в функции
+            details = get_anomaly_details(sequence, reconstruction, threshold)
 
+            # Добавляем контекст (IP и порты) в отчет об аномалии
             anomaly_info = {
                 "mse_error": float(mse),
                 "threshold": float(threshold),
                 "metrics_snapshot": dict(zip(HEADERS, row)),
-                **details  # Включаем score, feature и series_id в отчет
+                "network_context": metrics['metadata'],  # ТВОИ НОВЫЕ ПОЛЯ ЗДЕСЬ
+                **details
             }
             log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED", args=args)
 
 
 def handle_metrics_for_collect(metrics, args):
     """Обработчик для режима COLLECT."""
-    headers_with_timestamp = ['timestamp'] + HEADERS
 
-    row_data = [datetime.now().isoformat(),
-                metrics['total']['packets'], metrics['total']['loopback'], metrics['total']['multicast'],
-                metrics['total']['udp'], metrics['total']['tcp'], metrics['total']['options'],
-                metrics['total']['fragment'], metrics['total']['fin'], metrics['total']['syn'],
-                metrics['total']['intensivity'],
-                metrics['input']['packets'], metrics['input']['udp'], metrics['input']['tcp'],
-                metrics['input']['options'], metrics['input']['fragment'], metrics['input']['fin'],
-                metrics['input']['syn'], metrics['input']['intensivity'],
-                metrics['output']['packets'], metrics['output']['udp'], metrics['output']['tcp'],
-                metrics['output']['options'], metrics['output']['fragment'], metrics['output']['fin'],
-                metrics['output']['syn'], metrics['output']['intensivity']
-                ]
+    full_headers = ['timestamp'] + HEADERS + META_HEADERS
 
-    df = pd.DataFrame([row_data], columns=headers_with_timestamp)
-    df.to_csv(args.data_file, mode='a', header=False, index=False)
-    logging.info(f"Данные записаны. Пакетов: {metrics['total']['packets']}")
+    metrics_row = []
+    for h in HEADERS:
+        if h.startswith('total_'):
+            metrics_row.append(metrics['total'].get(h.replace('total_', ''), 0))
+        elif h.startswith('input_'):
+            metrics_row.append(metrics['input'].get(h.replace('input_', ''), 0))
+        elif h.startswith('output_'):
+            metrics_row.append(metrics['output'].get(h.replace('output_', ''), 0))
+
+    metadata_row = [metrics['metadata'].get(m, "None") for m in META_HEADERS]
+
+    row_data = [datetime.now().isoformat()] + metrics_row + metadata_row
+
+    file_exists = os.path.isfile(args.data_file)
+    df = pd.DataFrame([row_data], columns=full_headers)
+    df.to_csv(args.data_file, mode='a', header=not file_exists, index=False)
+
+    logging.info(f"Данные записаны. Поток: {metrics['metadata']['src_ip']} -> {metrics['metadata']['dst_ip']}")
 
 
 def run_file_validation(args, processor, detector):
@@ -316,6 +288,8 @@ def run_file_validation(args, processor, detector):
     # Чтение CSV с автоматическим определением разделителя
     try:
         df = pd.read_csv(args.data_file, sep=None, engine='python')
+        # Оставляем только те колонки, которые являются метриками (первые 26 числовых)
+        df = df[HEADERS]
         logger.info(f"Прочитано: строк={df.shape[0]}, столбцов={df.shape[1]}")
 
         if df.shape[1] < 2:
