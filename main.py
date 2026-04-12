@@ -35,6 +35,7 @@ HEADERS = [
 ]
 META_HEADERS = ['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol']
 NUM_FEATURES = len(HEADERS)
+CSV_COLUMNS = HEADERS + META_HEADERS
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -251,28 +252,54 @@ def handle_metrics_for_test(metrics, processor, detector, args, transmitter=None
 
 
 def handle_metrics_for_collect(metrics, args):
-    """Обработчик для режима COLLECT."""
+    """Обработчик для режима COLLECT с поддержкой метаданных."""
 
+    # Объединяем заголовки
     full_headers = ['timestamp'] + HEADERS + META_HEADERS
 
+    # 1. Извлекаем метрики (Числовые данные)
     metrics_row = []
     for h in HEADERS:
+        # Определяем категорию (total/input/output) и чистый ключ
         if h.startswith('total_'):
-            metrics_row.append(metrics['total'].get(h.replace('total_', ''), 0))
+            section = 'total'
+            key = h.replace('total_', '')
         elif h.startswith('input_'):
-            metrics_row.append(metrics['input'].get(h.replace('input_', ''), 0))
+            section = 'input'
+            key = h.replace('input_', '')
         elif h.startswith('output_'):
-            metrics_row.append(metrics['output'].get(h.replace('output_', ''), 0))
+            section = 'output'
+            key = h.replace('output_', '')
+        else:
+            continue
 
-    metadata_row = [metrics['metadata'].get(m, "None") for m in META_HEADERS]
+        # Получаем значение, учитывая возможные опечатки (intensity/intensivity)
+        val = metrics[section].get(key, 0)
+        metrics_row.append(val)
 
+    # 2. Извлекаем метаданные (Контекстные данные)
+    # Используем .get() с защитой на случай, если метаданных нет
+    metadata = metrics.get('metadata', {})
+    metadata_row = [metadata.get(m, "None") for m in META_HEADERS]
+
+    # 3. Формируем итоговую строку
     row_data = [datetime.now().isoformat()] + metrics_row + metadata_row
 
-    file_exists = os.path.isfile(args.data_file)
-    df = pd.DataFrame([row_data], columns=full_headers)
-    df.to_csv(args.data_file, mode='a', header=not file_exists, index=False)
+    # 4. Запись в файл
+    try:
+        file_exists = os.path.isfile(args.data_file)
+        df = pd.DataFrame([row_data], columns=full_headers)
 
-    logging.info(f"Данные записаны. Поток: {metrics['metadata']['src_ip']} -> {metrics['metadata']['dst_ip']}")
+        # Используем encoding='utf-8' для совместимости
+        df.to_csv(args.data_file, mode='a', header=not file_exists, index=False, encoding='utf-8')
+
+        # Безопасный лог
+        src = metadata.get('src_ip', '0.0.0.0')
+        dst = metadata.get('dst_ip', '0.0.0.0')
+        logging.info(f"Запись в CSV: {src} -> {dst} | Packets: {metrics['total'].get('packets', 0)}")
+
+    except Exception as e:
+        logging.error(f"Ошибка при записи в CSV: {e}")
 
 
 def run_file_validation(args, processor, detector):

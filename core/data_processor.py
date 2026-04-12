@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 import logging
-import joblib  
+import joblib
 import os
 
 logger = logging.getLogger(__name__)
@@ -49,31 +49,33 @@ class DataProcessor:
         # Возвращаем 3D массив (samples, time_step, num_features)
         return np.array(xs)
 
-    def load_and_preprocess_training_data(self, file_path, fit_scaler=True):
-        """Загрузка и нормализация данных для обучения."""
+    def load_and_preprocess_training_data(self, file_path, headers_list, fit_scaler=True):
+        """Загрузка и нормализация данных для обучения с фильтрацией признаков."""
         try:
+            # 1. Загрузка файла
             data = pd.read_csv(file_path, sep=None, engine='python')
             logger.info(f"Загружен файл: {file_path}. Размер: {data.shape}")
 
-            if data.shape[1] <= 1:
-                logger.error(f"ОШИБКА: Найдено столбцов: {data.shape[1]}. Ожидалось > 1.")
+            # 2. Фильтрация данных
+            # Нам нужны только те колонки, на которых учится нейросеть (метрики).
+            # Игнорируем timestamp и метаданные (src_ip и т.д.)
+            missing_cols = [col for col in headers_list if col not in data.columns]
+            if missing_cols:
+                logger.error(f"В файле отсутствуют необходимые колонки: {missing_cols}")
                 return None
 
-            first_col = str(data.columns[0]).lower()
-            if 'time' in first_col or 'date' in first_col:
-                data = data.iloc[:, 1:]
+            # Оставляем только числовые признаки для обучения
+            train_data = data[headers_list]
 
-            if data.shape[1] == 0:
-                logger.error("После удаления метки времени не осталось данных.")
-                return None
-
+            # 3. Нормализация
             if fit_scaler or self.scaler is None:
                 self.scaler = MinMaxScaler()
-                scaled_data = self.scaler.fit_transform(data)
-                logger.info("Scaler обучен на новых данных.")
+                scaled_data = self.scaler.fit_transform(train_data)
+                logger.info("Scaler обучен на числовых признаках (метаданные проигнорированы).")
             else:
-                scaled_data = self.scaler.transform(data)
+                scaled_data = self.scaler.transform(train_data)
 
+            # Возвращаем 2D массив для последующего создания последовательностей
             return scaled_data
 
         except FileNotFoundError:
