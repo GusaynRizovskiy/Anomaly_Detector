@@ -44,65 +44,79 @@ class Sniffer:
         }
 
     def packet_callback(self, packet):
-        """
-        Обработка каждого перехваченного пакета.
-        Просто обновляем счетчики в словаре.
-        """
-        self.packet_counts['total']['packets'] += 1
+        # 1. Безопасное получение IP-слоя
+        ip_layer = packet.getlayer(IP)
+        if not ip_layer:
+            return
 
-        if packet.haslayer(IP):
-            if packet.haslayer(IP):
-                ip_layer = packet[IP]
-                proto = "TCP" if packet.haslayer(TCP) else "UDP" if packet.haslayer(UDP) else "Other"
+        src_ip = ip_layer.src
+        dst_ip = ip_layer.dst
 
-                # Формируем ключ потока
-                flow_key = (
-                    ip_layer.src,
-                    packet[TCP].sport if packet.haslayer(TCP) else (packet[UDP].sport if packet.haslayer(UDP) else 0),
-                    ip_layer.dst,
-                    packet[TCP].dport if packet.haslayer(TCP) else (packet[UDP].dport if packet.haslayer(UDP) else 0),
-                    proto
-                )
-                self.packet_counts['current_flows'][flow_key] += 1
-            src_ip = packet[IP].src
-            dst_ip = packet[IP].dst
+        # 2. Определение протокола и портов без риска падения
+        proto = "Other"
+        sport = 0
+        dport = 0
 
-            # Проверка multicast и loopback
-            if dst_ip == "255.255.255.255" or dst_ip.endswith(".255") or dst_ip.startswith(("224.", "23")):
-                self.packet_counts['total']['multicast'] += 1
-            elif dst_ip == '127.0.0.1':
-                self.packet_counts['total']['loopback'] += 1
+        tcp_layer = packet.getlayer(TCP)
+        udp_layer = packet.getlayer(UDP)
 
-            # Определение направления (входящий/исходящий)
-            if self.address_in_network(dst_ip, self.network_cidr) and not self.address_in_network(src_ip,
-                                                                                                  self.network_cidr):
-                self.update_packet_counts_directional(packet, 'input')
-            elif self.address_in_network(src_ip, self.network_cidr) and not self.address_in_network(dst_ip,
-                                                                                                    self.network_cidr):
-                self.update_packet_counts_directional(packet, 'output')
+        if tcp_layer:
+            proto = "TCP"
+            sport = tcp_layer.sport
+            dport = tcp_layer.dport
+        elif udp_layer:
+            proto = "UDP"
+            sport = udp_layer.sport
+            dport = udp_layer.dport
 
-        # Обновление метрик по протоколам и флагам
+        # 3. Формируем метаданные потока
+        flow_key = (src_ip, sport, dst_ip, dport, proto)
+        self.packet_counts['current_flows'][flow_key] += 1
+
+        # 4. Проверка multicast и loopback
+        if dst_ip == "255.255.255.255" or dst_ip.endswith(".255") or dst_ip.startswith(("224.", "23")):
+            self.packet_counts['total']['multicast'] += 1
+        elif dst_ip == '127.0.0.1':
+            self.packet_counts['total']['loopback'] += 1
+
+        # 5. Определение направления
+        is_input = self.address_in_network(dst_ip, self.network_cidr) and not self.address_in_network(src_ip, self.network_cidr)
+        is_output = self.address_in_network(src_ip, self.network_cidr) and not self.address_in_network(dst_ip, self.network_cidr)
+
+        if is_input:
+            self.update_packet_counts_directional(packet, 'input')
+        elif is_output:
+            self.update_packet_counts_directional(packet, 'output')
+
+        # 6. Общий счетчик
         self.update_packet_counts_directional(packet, 'total')
 
     def update_packet_counts_directional(self, packet, direction):
-        """Обновление счетчиков для заданного направления."""
+        """Обновление счетчиков для заданного направления с защитой от ошибок."""
         self.packet_counts[direction]['packets'] += 1
 
-        # Обновление счетчиков по протоколам
-        if packet.haslayer(UDP):
+        # Безопасно получаем слои
+        tcp_layer = packet.getlayer(TCP)
+        udp_layer = packet.getlayer(UDP)
+        ip_layer = packet.getlayer(IP)
+
+        if udp_layer:
             self.packet_counts[direction]['udp'] += 1
-        elif packet.haslayer(TCP):
+        elif tcp_layer:
             self.packet_counts[direction]['tcp'] += 1
-            if packet[TCP].flags & 0x01:  # FIN flag
+            # Проверка флагов через побитовое И
+            flags = tcp_layer.flags
+            if flags & 0x01:  # FIN
                 self.packet_counts[direction]['fin'] += 1
-            if packet[TCP].flags & 0x02:  # SYN flag
+            if flags & 0x02:  # SYN
                 self.packet_counts[direction]['syn'] += 1
 
-        # Проверка опций и фрагментации
-        if packet.haslayer(IP):
-            if packet[IP].options:
+        if ip_layer:
+            # Проверка наличия опций (длина списка > 0)
+            if ip_layer.options:
                 self.packet_counts[direction]['options'] += 1
-            if packet[IP].flags & 0x2:  # MF (More Fragments) flag
+            # Проверка флага фрагментации (MF - More Fragments)
+            if ip_layer.flags & 0x1:
                 self.packet_counts[direction]['fragment'] += 1
 
     def _sniff_loop(self):
@@ -111,6 +125,7 @@ class Sniffer:
             self.packet_counts = self.initialize_packet_counts()
 
             start_time = time.time()
+            # Запуск захвата на интервал time_interval
             sniff(
                 filter=f"net {self.network_cidr}",
                 iface=self.interface,
@@ -120,23 +135,21 @@ class Sniffer:
             )
             end_time = time.time()
 
-            # Вычисление интенсивностей после завершения интервала
             duration = end_time - start_time
-            if duration > 0:
-                self.packet_counts['total']['intensivity'] = self.packet_counts['total']['packets'] / duration
-                self.packet_counts['input']['intensivity'] = self.packet_counts['input']['packets'] / duration
-                self.packet_counts['output']['intensivity'] = self.packet_counts['output']['packets'] / duration
-            else:
-                self.packet_counts['total']['intensivity'] = 0
-                self.packet_counts['input']['intensivity'] = 0
-                self.packet_counts['output']['intensivity'] = 0
-            # 1. Находим самый активный поток (тот, у кого больше всего пакетов)
+
+            # Расчет интенсивностей (исправлено название на 'intensity')
+            for key in ['total', 'input', 'output']:
+                if duration > 0:
+                    self.packet_counts[key]['intensity'] = self.packet_counts[key]['packets'] / duration
+                else:
+                    self.packet_counts[key]['intensity'] = 0
+
+            # Извлечение самого активного потока (Context)
             top_flow = ("0.0.0.0", 0, "0.0.0.0", 0, "None")
             if self.packet_counts['current_flows']:
-                # .most_common(1) вернет [((src, sport, dst, dport, proto), count)]
+                # .most_common(1) вернет [((src, sp, dst, dp, pr), count)]
                 top_flow = self.packet_counts['current_flows'].most_common(1)[0][0]
 
-            # 2. Сохраняем метаданные в отдельный ключ, чтобы main.py их увидел
             self.packet_counts['metadata'] = {
                 "src_ip": top_flow[0],
                 "src_port": top_flow[1],
@@ -144,8 +157,10 @@ class Sniffer:
                 "dst_port": top_flow[3],
                 "protocol": top_flow[4]
             }
-            # Передача агрегированных метрик в основной поток
-            self.callback(self.packet_counts)
+
+            # Передача данных в callback (в main.py)
+            if self.is_running:
+                self.callback(self.packet_counts)
 
     def start_sniffing(self):
         """Запуск сниффера в отдельном потоке."""

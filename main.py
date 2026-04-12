@@ -193,20 +193,24 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None,t
         with open(filepath, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
-        # Вывод в консоль
         if transmitter and event_type != "OFFLINE_DETECTION":
-            threading.Thread(target=transmitter.send_event, args=(anomaly_data,), daemon=True).start()
-
-        # 2. НОВОЕ: Отправка на удаленный сервер, если аргументы переданы
-        if args and getattr(args, 'remote_host', None) and getattr(args, 'remote_port', None):
-            send_alert_to_remote(record, args.remote_host, args.remote_port)
+            # Мы создаем поток, который выполнит только одну задачу — отправку.
+            # daemon=True означает, что если вы закроете основную программу,
+            # этот поток не заблокирует выход.
+            thread = threading.Thread(
+                target=transmitter.send_event,
+                args=(anomaly_data,),
+                daemon=True
+            )
+            thread.start()
+            logger.info("Поток отправки аномалии на удаленный сервер запущен.")
 
 
     except Exception as e:
         logger.error(f"Ошибка при логировании аномалии: {e}")
 
 
-def handle_metrics_for_test(metrics, processor, detector, args):
+def handle_metrics_for_test(metrics, processor, detector, args, transmitter=None):
     global data_buffer, threshold
 
     # 1. Извлекаем только 26 числовых метрик для нейросети
@@ -240,7 +244,10 @@ def handle_metrics_for_test(metrics, processor, detector, args):
                 "network_context": metrics['metadata'],  # ТВОИ НОВЫЕ ПОЛЯ ЗДЕСЬ
                 **details
             }
-            log_anomaly(anomaly_info, event_type="NETWORK_ANOMALY_DETECTED", args=args, transmitter=None)
+            log_anomaly(anomaly_info,
+                        event_type="NETWORK_ANOMALY_DETECTED",
+                        args=args,
+                        transmitter=transmitter)
 
 
 def handle_metrics_for_collect(metrics, args):
@@ -558,7 +565,7 @@ def main():
             interface=args.interface,
             network_cidr=args.network,
             time_interval=args.interval,
-            callback=lambda m: handle_metrics_for_test(m, processor, detector, args)
+            callback=lambda m: handle_metrics_for_test(m, processor, detector, args, transmitter)
         )
         sniffer.start_sniffing()
 
