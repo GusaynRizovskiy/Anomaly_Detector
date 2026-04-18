@@ -39,32 +39,51 @@ class AnomalyDetector:
         self.model = Model(inputs=inputs, outputs=x)
         self.model.compile(optimizer='adam', loss=self.loss_metric)
 
-    def train_model(self, X_train, epochs, batch_size, model_path):
-        """Обучение модели."""
+    def train_model(self, X_train, epochs=50, batch_size=32, validation_split=0.1, model_path=None):
+        """
+        Обучение модели. model_path теперь в конце и не обязателен для вызова.
+        """
         if self.model is None:
             self.build_model()
 
-        from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-        callbacks = [
-            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-            ModelCheckpoint(model_path, monitor='val_loss', save_best_only=True)
-        ]
+        logger.info(f"Начало обучения: epochs={epochs}, batch_size={batch_size}")
+
+        # Обучаем
+        history = self.model.fit(
+            X_train, X_train,
+            epochs=epochs,
+            batch_size=batch_size,
+            validation_split=validation_split,
+            verbose=1
+        )
+
+        # Если путь передан, сохраняем сразу (но в main.py у нас отдельный вызов save_model, так что это опционально)
+        if model_path:
+            self.save_model(model_path)
+
+        return history
+
+    def save_model(self, model_path):
+        """
+        Сохранение обученной модели на диск.
+        """
+        if self.model is None:
+            logger.error("Ошибка: Попытка сохранить пустую модель (модель не была построена или обучена).")
+            return
 
         try:
-            history = self.model.fit(
-                X_train, X_train,
-                epochs=epochs,
-                batch_size=batch_size,
-                validation_split=0.1,
-                callbacks=callbacks,
-                verbose=2
-            )
-            # ВЫЗОВ ВЫНЕСЕННОГО МЕТОДА
-            self._save_training_plot(history, show=False)
-            logger.info("Обучение завершено. Модель сохранена.")
-        except Exception as e:
-            logger.error(f"Ошибка в процессе обучения: {e}")
+            # Создаем папку для моделей, если её нет
+            directory = os.path.dirname(model_path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory)
+                logger.info(f"Создана директория: {directory}")
 
+            # Сохраняем модель в формате .h5 или в стандартном формате Keras
+            self.model.save(model_path)
+            logger.info(f"Модель успешно сохранена по адресу: {model_path}")
+        except Exception as e:
+            logger.error(f"Не удалось сохранить модель: {e}")
+            
     # ИСПРАВЛЕНО: Теперь метод находится на уровне класса (вровень с другими def)
     def _save_training_plot(self, history, show=False):
         """Вспомогательный метод для построения графиков."""

@@ -50,39 +50,50 @@ class DataProcessor:
         return np.array(xs)
 
     def load_and_preprocess_training_data(self, file_path, headers_list, fit_scaler=True):
-        """Загрузка и нормализация данных для обучения с фильтрацией признаков."""
         try:
-            # 1. Загрузка файла
-            data = pd.read_csv(file_path, sep=None, engine='python')
-            logger.info(f"Загружен файл: {file_path}. Размер: {data.shape}")
+            # Читаем файл с автоопределением разделителя
+            df = pd.read_csv(file_path, sep=None, engine='python')
+            logger.info(f"Загружен файл. Строк: {len(df)}, Колонок: {len(df.columns)}")
 
-            # 2. Фильтрация данных
-            # Нам нужны только те колонки, на которых учится нейросеть (метрики).
-            # Игнорируем timestamp и метаданные (src_ip и т.д.)
-            missing_cols = [col for col in headers_list if col not in data.columns]
-            if missing_cols:
-                logger.error(f"В файле отсутствуют необходимые колонки: {missing_cols}")
+            # 1. Оставляем только те колонки из HEADERS, которые реально есть в файле
+            existing_headers = [h for h in headers_list if h in df.columns]
+            if not existing_headers:
+                logger.error(f"В файле нет ни одной колонки из списка HEADERS!")
                 return None
 
-            # Оставляем только числовые признаки для обучения
-            train_data = data[headers_list]
+            data = df[existing_headers].copy()
 
-            # 3. Нормализация
-            if fit_scaler or self.scaler is None:
+            # 2. ДИАГНОСТИКА: Ищем текстовые колонки
+            numeric_cols = []
+            for col in data.columns:
+                # Пытаемся конвертировать колонку
+                converted = pd.to_numeric(data[col], errors='coerce')
+                # Если в колонке больше 50% — это мусор (текст), выкидываем её из обучения
+                if converted.isna().sum() > len(data) * 0.5:
+                    logger.warning(f"Колонка '{col}' содержит текст (например, IP). ИСКЛЮЧАЕМ её из обучения.")
+                else:
+                    data[col] = converted
+                    numeric_cols.append(col)
+
+            # 3. Очистка
+            data = data[numeric_cols].dropna()
+            logger.info(f"После очистки осталось колонок: {len(numeric_cols)}, строк: {len(data)}")
+
+            if data.empty:
+                logger.error("ДАННЫХ НЕТ. Проверь: возможно, все выбранные колонки содержат текст.")
+                return None
+
+            # 4. Нормализация
+            if fit_scaler:
                 self.scaler = MinMaxScaler()
-                scaled_data = self.scaler.fit_transform(train_data)
-                logger.info("Scaler обучен на числовых признаках (метаданные проигнорированы).")
+                scaled_data = self.scaler.fit_transform(data)
             else:
-                scaled_data = self.scaler.transform(train_data)
+                scaled_data = self.scaler.transform(data)
 
-            # Возвращаем 2D массив для последующего создания последовательностей
             return scaled_data
 
-        except FileNotFoundError:
-            logger.error(f"Файл данных не найден: {file_path}")
-            return None
         except Exception as e:
-            logger.error(f"Ошибка загрузки/обработки данных: {e}")
+            logger.error(f"Критическая ошибка: {e}")
             return None
 
     # НОВЫЕ МЕТОДЫ ДЛЯ СОХРАНЕНИЯ КОНТЕКСТА (Обязательно для диплома)
