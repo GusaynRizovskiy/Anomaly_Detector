@@ -651,6 +651,22 @@ def main():
         # 4. ИСПРАВЛЕНО: Сохраняем скейлер через ПРОЦЕССОР
 
         processor.save_scaler(args.scaler_file)
+        # Рассчитываем порог (например, 99-й перцентиль ошибок на обучающей выборке)
+        train_predictions = detector.model.predict(X_train)
+        mse_errors = np.mean(np.power(X_train - train_predictions, 2), axis=(1, 2))
+        threshold = np.percentile(mse_errors, 99)  # 99% данных — норма
+
+        # Сохраняем это значение
+        config = {
+            'threshold': float(threshold),
+            'time_step': args.time_step,
+            'features_count': len(HEADERS)
+        }
+
+        with open('models/config.json', 'w') as f:
+            json.dump(config, f)
+
+        logger.info(f"Значение порога {threshold} сохранено в models/config.json")
 
     elif args.mode == 'collect':
         # Режим сбора данных
