@@ -616,7 +616,7 @@ def main():
 
         logger.info(f"Запуск обучения на файле: {args.data_file}")
 
-        raw_data = processor.load_and_preprocess_training_data(args.data_file, fit_scaler=True)
+        raw_data = processor.load_and_preprocess_training_data(args.data_file, headers_list=HEADERS, fit_scaler=True)
 
         if raw_data is None: return
 
