@@ -68,3 +68,7 @@ Anomaly Sniffer — это интеллектуальный программны
     core/anomaly_detector.py — описание и логика нейронной сети.
     core/data_processor.py — предобработка данных и нормализация.
     core/label_preparer.py — утилита для разметки собранных данных.
+
+Разметка: python main.py --mode label --data_file traffic.csv (получаешь traffic_labeled.csv).
+
+Валидация: python main.py --mode validate --data_file traffic.csv --labels traffic_labeled.csv.

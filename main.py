@@ -4,7 +4,6 @@
 import argparse
 import os
 import threading
-import json
 import numpy as np
 import time
 from datetime import datetime
@@ -21,6 +20,8 @@ from core.data_processor import DataProcessor
 from sklearn.metrics import (confusion_matrix, classification_report,
                              roc_curve, auc, precision_recall_curve)
 from core.remote_transmitter import RemoteTransmitter
+import json
+from core.labeler import DataLabeler
 
 
 # Настройка заголовков (должны совпадать с порядком в сниффере)
@@ -476,13 +477,13 @@ def main():
 
     parser = argparse.ArgumentParser(description="Диплом: Детектор аномалий (CNN-LSTM Autoencoder).")
     # ОБНОВЛЕНО: Новые названия режимов
-    parser.add_argument('mode', choices=['collect', 'train', 'detect-online', 'detect-offline'],
-                        help="Режим работы: collect (сбор), train (обучение), detect-online (live), detect-offline (файл).")
+    parser.add_argument('mode', choices=['collect', 'train', 'detect-online', 'detect-offline', 'label'],
+                        help="Режим работы: collect (сбор), train (обучение), detect-online (live), detect-offline (файл), label (разметка).")
 
     parser.add_argument('-i', '--interface', default='eth0', help="Сетевой интерфейс (для collect/detect-online).")
     parser.add_argument('-n', '--network', default='192.168.1.0/24', help="CIDR локальной сети.")
     parser.add_argument('-t', '--interval', type=int, default=5, help="Интервал сбора (сек).")
-    parser.add_argument('-d', '--data-file', default='training_data.csv', help="Файл данных (csv для offline).")
+    parser.add_argument('-d', '--data_file', default='training_data.csv', help="Файл данных (csv для offline).")
     parser.add_argument('-ts', '--time_step', type=int, default=10, help="Длина окна последовательности.")
     parser.add_argument('-e', '--epochs', type=int, default=50, help="Эпохи обучения.")
     parser.add_argument('-b', '--batch_size', type=int, default=64, help="Размер батча.")
@@ -499,6 +500,7 @@ def main():
     parser.add_argument('--show-plot', action='store_true', help='Показать график обучения (train)')
     parser.add_argument('--demo-mode', action='store_true',
                         help="Демонстрационный режим: идеальные метрики (для презентации)")
+    parser.add_argument('--pcap_start', type=str, default="2017-07-07 14:59:39", help='Время старта PCAP')
 
 
     args = parser.parse_args()
@@ -622,9 +624,6 @@ def main():
 
             sniffer.stop_sniffing()
 
-
-
-
     elif args.mode == 'train':
 
         logger.info(f"Запуск режима обучения на файле: {args.data_file}")
@@ -710,6 +709,22 @@ def main():
         except KeyboardInterrupt:
             logger.info("Остановка сбора.")
             sniffer.stop_sniffing()
+
+    # В блок выбора режимов (if args.mode == ...)
+    elif args.mode == 'label':
+        print("[*] Запуск модуля синхронизации и разметки...")
+        pcap_start = datetime.strptime(args.pcap_start, "%Y-%m-%d %H:%M:%S")
+
+        labeler = DataLabeler(
+            pcap_start_time=pcap_start,
+            timezone_offset=6,  # Настрой под свой Wireshark
+            aggregation_interval=args.interval
+        )
+
+        output_file = args.data_file.replace(".csv", "_labeled.csv")
+        if labeler.process(args.data_file, output_file):
+            print(f"[+] Файл успешно размечен: {output_file}")
+
 
 def evaluate_and_plot_demo(data_file, threshold, output_prefix, time_step=10, interval=5):
     """
