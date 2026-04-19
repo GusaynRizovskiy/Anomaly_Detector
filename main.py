@@ -525,39 +525,69 @@ def main():
 
         run_file_validation(args, processor, detector)
 
+
     elif args.mode == 'detect-online':
 
         logger.info(f"--- ЗАПУСК РЕЖИМА DETECT-ONLINE (Интерфейс: {args.interface}) ---")
 
-        # 1. Загрузка модели
+        # 1. Загрузка нейросети и скейлера
+
+        print("[1/4] Загрузка компонентов ИИ...")
 
         detector.load_model(args.model_file)
 
-        # 2. Загрузка скейлера
-
         if not processor.load_scaler(args.scaler_file):
-            logger.error("Критическая ошибка: файл нормализации (scaler.pkl) не найден!")
+            logger.error("Критическая ошибка: файл нормализации не найден!")
 
             return
-
-        # 3. Загрузка порога через единую функцию (БЕЗ лишних try-except)
 
         threshold = load_threshold(args.threshold)
 
-        if detector.model is None or processor.scaler is None:
-            logger.error("Не удалось инициализировать компоненты детекции.")
+        print(f"      - Модель готова. Порог: {threshold:.6f}")
 
-            return
+        # 2. Соединение с удаленным сервером и аутентификация
 
-        logger.info(f"Порог детекции успешно установлен: {threshold:.6f}")
+        print("[2/4] Установка соединения с сервером мониторинга...")
 
-        # Буфер для формирования временного окна (time_step)
+        if transmitter:
 
-        # Важно: handle_metrics_for_test должен использовать этот буфер
+            # Пытаемся авторизоваться
+
+            if transmitter.authenticate():
+
+                print(f"      - Соединение установлено: {args.server_url}")
+
+                print(f"      - Аутентификация пройдена. Токен получен.")
+
+                # Попытка открыть WebSocket
+
+                if transmitter.connect_ws():
+
+                    print("      - Канал обратной связи (WebSocket) активен.")
+
+                else:
+
+                    print("      - ПРЕДУПРЕЖДЕНИЕ: WebSocket не запущен. События будут копиться в очереди.")
+
+            else:
+
+                print("      - ОШИБКА: Не удалось авторизоваться на сервере. Проверьте логин/пароль.")
+
+                # Здесь можно решить: продолжать работу локально или выйти
+
+        else:
+
+            print("      - Работа в автономном режиме (без отправки на сервер).")
+
+        # 3. Настройка буфера
+
+        print(f"[3/4] Инициализация временного окна (размер: {args.time_step})...")
 
         data_buffer = collections.deque(maxlen=args.time_step)
 
-        # Запуск захвата трафика
+        # 4. Запуск перехвата
+
+        print(f"[4/4] Активация сенсора на интерфейсе {args.interface}...")
 
         sniffer = Sniffer(
 
@@ -573,7 +603,13 @@ def main():
 
         sniffer.start_sniffing()
 
-        logger.info("Сенсор активен. Нажмите Ctrl+C для остановки.")
+        print("\n" + "=" * 50)
+
+        print(" СИСТЕМА ОБНАРУЖЕНИЯ АНОМАЛИЙ АКТИВИРОВАНА")
+
+        print(" Ожидание сетевого трафика... (Ctrl+C для выхода)")
+
+        print("=" * 50 + "\n")
 
         try:
 
@@ -582,7 +618,7 @@ def main():
 
         except KeyboardInterrupt:
 
-            logger.info("Остановка сниффера...")
+            print("\n[!] Остановка системы пользователем...")
 
             sniffer.stop_sniffing()
 
