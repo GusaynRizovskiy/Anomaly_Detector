@@ -307,10 +307,10 @@ def run_file_validation(args, processor, detector):
     logger.info(f"Файл данных: {args.data_file}")
 
     # Загрузка модели и скейлера
-    detector.load_model(args.model_path)
+    detector.load_model(args.model_file)
     if detector.model is None:
         return
-    processor.scaler = detector.load_scaler(args.scaler_path)
+    processor.scaler = detector.load_scaler(args.scaler_file)
     if processor.scaler is None:
         return
 
@@ -572,8 +572,8 @@ def main():
         # Новый режим реального времени
         logger.info(f"--- ЗАПУСК РЕЖИМА DETECT-ONLINE (Интерфейс: {args.interface}) ---")
 
-        detector.load_model(args.model_path)
-        if not processor.load_scaler(SCALER_PATH):
+        detector.load_model(args.model_file)
+        if not processor.load_scaler(args.scaler_file):
             logger.error("Критическая ошибка: файл нормализации не найден!")
             return
 
