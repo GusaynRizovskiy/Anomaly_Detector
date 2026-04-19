@@ -4,7 +4,7 @@
 import argparse
 import os
 import threading
-
+import json
 import numpy as np
 import time
 from datetime import datetime
@@ -44,6 +44,26 @@ logger = logging.getLogger(__name__)
 # Глобальные переменные для режима TEST
 data_buffer = collections.deque(maxlen=None)
 threshold = None
+
+
+def load_threshold(threshold_arg):
+    """Логика синхронизации: получаем порог из числа или из JSON-файла."""
+    if os.path.exists(threshold_arg) and threshold_arg.endswith('.json'):
+        try:
+            with open(threshold_arg, 'r') as f:
+                config = json.load(f)
+                # Ищем ключ 'threshold' в словаре
+                val = config.get('threshold', 0.01)
+                logging.info(f"Порог успешно загружен из файла: {val}")
+                return float(val)
+        except Exception as e:
+            logging.error(f"Ошибка чтения JSON порога: {e}. Используем 0.01")
+            return 0.01
+    try:
+        return float(threshold_arg)
+    except ValueError:
+        logging.warning(f"Не удалось распознать порог '{threshold_arg}'. Используем 0.01")
+        return 0.01
 
 def send_alert_to_remote(anomaly_data, host, port):
     """Отправка JSON алертов по TCP сокету."""
@@ -304,24 +324,18 @@ def handle_metrics_for_collect(metrics, args):
 
 def run_file_validation(args, processor, detector):
     logger.info("--- ЗАПУСК РЕЖИМА ВАЛИДАЦИИ ФАЙЛА ---")
-    logger.info(f"Файл данных: {args.data_file}")
-
     # Загрузка модели и скейлера
-    detector.load_model(args.model_file)
-    if detector.model is None:
-        return
-    processor.scaler = detector.load_scaler(args.scaler_file)
-    if processor.scaler is None:
-        return
+    logger.info(f"Загрузка модели из {args.model_file} и скейлера из {args.scaler_file}...")
 
-    # Загрузка порога
-    try:
-        with open(args.threshold_file, 'r') as f:
-            threshold_val = float(f.read().strip())
-        logger.info(f"Порог загружен: {threshold_val:.6f}")
-    except Exception as e:
-        logger.error(f"Не удалось загрузить порог: {e}")
-        return
+    threshold = load_threshold(args.threshold)
+
+    # 1. Детектор грузит модель
+    detector.load_model(args.model_file)
+
+    # 2. Процессор грузит скейлер (ИСПРАВЛЕНО: правильный объект и вызов без присваивания)
+    processor.load_scaler(args.scaler_file)
+
+    logger.info(f"Итоговый порог для анализа: {threshold:.6f}")
 
     # Чтение CSV с автоматическим определением разделителя
     try:
@@ -406,14 +420,14 @@ def run_file_validation(args, processor, detector):
                     logger.info("ДЕМОНСТРАЦИОННЫЙ РЕЖИМ: будут показаны идеальные метрики")
                     evaluate_and_plot_demo(
                         data_file=args.data_file,
-                        threshold=threshold_val,
+                        threshold=threshold,
                         output_prefix=f"plots/validation_{os.path.basename(args.data_file)}",
                         time_step=args.time_step,
                         interval=args.interval  # нужно добавить args.interval в парсер, если его нет
                     )
                 else:
-                    y_pred = (mse_errors > threshold_val).astype(int)
-                    evaluate_and_plot(y_true, y_pred, mse_errors, threshold_val,
+                    y_pred = (mse_errors > threshold).astype(int)
+                    evaluate_and_plot(y_true, y_pred, mse_errors, threshold,
                                       output_prefix=f"plots/validation_{os.path.basename(args.data_file)}")
             except Exception as e:
                 logger.error(f"Ошибка при оценке метрик: {e}")
@@ -422,7 +436,7 @@ def run_file_validation(args, processor, detector):
         return
 
     # Поиск аномалий
-    anomalies_idx = np.where(mse_errors > threshold_val)[0]
+    anomalies_idx = np.where(mse_errors > threshold)[0]
     num_anomalies = len(anomalies_idx)
     logger.info(f"Обнаружено аномалий: {num_anomalies}")
 
@@ -434,7 +448,7 @@ def run_file_validation(args, processor, detector):
                 "source_file": args.data_file,
                 "window_index": int(idx),
                 "mse_error": float(mse_errors[idx]),
-                "threshold": float(threshold_val)
+                "threshold": float(threshold)
             }
             log_anomaly(anomaly_info, event_type="OFFLINE_DETECTION",args=args)
         logger.info("Сохранение завершено.")
@@ -464,7 +478,7 @@ def run_file_validation(args, processor, detector):
             plt.xticks(rotation=45, ha='right')
         # ------------------------------------------------------------
 
-        plt.axhline(y=threshold_val, color='red', linestyle='--', label=f'Порог ({threshold_val:.4f})')
+        plt.axhline(y=threshold, color='red', linestyle='--', label=f'Порог ({threshold:.4f})')
         plt.xlabel('Время' if timestamp_col is not None else 'Номер окна')
         plt.ylabel('MSE ошибка')
         plt.title(f'Валидация файла: {os.path.basename(args.data_file)}')
@@ -532,7 +546,8 @@ def main():
     parser.add_argument('--remote-port', type=int, help="Порт сервера для отправки алертов")
     parser.add_argument('--scaler_file', type=str, default='models/scaler.pkl',
                         help='Путь для сохранения/загрузки скейлера')
-    parser.add_argument('-thr', '--threshold_file', default='Threshold/threshold.txt', help="Путь к порогу.")
+    parser.add_argument('--threshold', type=str, default='0.01',
+                        help='Число (0.01) или путь к файлу (models/config.json)')
     parser.add_argument('--labels', help="Путь к CSV с колонкой 'label' (истинные метки для оценки)")
     parser.add_argument('--show-plot', action='store_true', help='Показать график обучения (train)')
     parser.add_argument('--demo-mode', action='store_true',
@@ -566,6 +581,7 @@ def main():
         if not os.path.exists(args.data_file):
             logger.error(f"Файл не найден: {args.data_file}")
             return
+
         run_file_validation(args, processor, detector)
 
     elif args.mode == 'detect-online':
@@ -583,7 +599,7 @@ def main():
 
         # Загрузка порога
         try:
-            with open(args.threshold_file, 'r') as f:
+            with open(args.threshold, 'r') as f:
                 threshold = float(f.read().strip())
             logger.info(f"Порог детекции: {threshold:.6f}")
         except Exception:
@@ -692,7 +708,6 @@ def main():
         except KeyboardInterrupt:
             logger.info("Остановка сбора.")
             sniffer.stop_sniffing()
-
 
 def evaluate_and_plot_demo(data_file, threshold, output_prefix, time_step=10, interval=5):
     """
