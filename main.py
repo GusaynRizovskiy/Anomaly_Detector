@@ -517,12 +517,6 @@ def main():
             password=os.getenv("REMOTE_PASSWORD", "!QAZ2wsx")
         )
 
-
-    def ensure_directories():
-        """Создает структуру папок в корне проекта."""
-        for d in ["Scaler", "Threshold", "plots", "logs"]:
-            os.makedirs(d, exist_ok=True)
-
     if args.mode == 'detect-offline':
         # Переименованный режим validate
         if not os.path.exists(args.data_file):
@@ -532,46 +526,64 @@ def main():
         run_file_validation(args, processor, detector)
 
     elif args.mode == 'detect-online':
-        # Новый режим реального времени
+
         logger.info(f"--- ЗАПУСК РЕЖИМА DETECT-ONLINE (Интерфейс: {args.interface}) ---")
 
+        # 1. Загрузка модели
+
         detector.load_model(args.model_file)
+
+        # 2. Загрузка скейлера
+
         if not processor.load_scaler(args.scaler_file):
-            logger.error("Критическая ошибка: файл нормализации не найден!")
+            logger.error("Критическая ошибка: файл нормализации (scaler.pkl) не найден!")
+
             return
+
+        # 3. Загрузка порога через единую функцию (БЕЗ лишних try-except)
+
+        threshold = load_threshold(args.threshold)
 
         if detector.model is None or processor.scaler is None:
-            logger.error("Необходимые файлы (модель/скейлер) отсутствуют.")
+            logger.error("Не удалось инициализировать компоненты детекции.")
+
             return
 
-        # Загрузка порога
-        try:
-            with open(args.threshold, 'r') as f:
-                threshold = float(f.read().strip())
-            logger.info(f"Порог детекции: {threshold:.6f}")
-        except Exception:
-            logger.error("Файл порога не найден. Проведите обучение (train).")
-            return
+        logger.info(f"Порог детекции успешно установлен: {threshold:.6f}")
 
-        # Буфер для формирования временного окна
+        # Буфер для формирования временного окна (time_step)
+
+        # Важно: handle_metrics_for_test должен использовать этот буфер
+
         data_buffer = collections.deque(maxlen=args.time_step)
 
-        # Запуск захвата трафика. Мы используем handle_metrics_for_test,
-        # так как она уже реализует логику накопления буфера и вызова детектора.
+        # Запуск захвата трафика
+
         sniffer = Sniffer(
+
             interface=args.interface,
+
             network_cidr=args.network,
+
             time_interval=args.interval,
+
             callback=lambda m: handle_metrics_for_test(m, processor, detector, args, transmitter)
+
         )
+
         sniffer.start_sniffing()
 
-        logger.info("Сенсор активен. Ожидание аномалий...")
+        logger.info("Сенсор активен. Нажмите Ctrl+C для остановки.")
+
         try:
+
             while True:
                 time.sleep(1)
+
         except KeyboardInterrupt:
-            logger.info("Завершение работы...")
+
+            logger.info("Остановка сниффера...")
+
             sniffer.stop_sniffing()
 
 
