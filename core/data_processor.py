@@ -51,49 +51,57 @@ class DataProcessor:
 
     def load_and_preprocess_training_data(self, file_path, headers_list, fit_scaler=True):
         try:
-            # Читаем файл с автоопределением разделителя
+            # Читаем файл
             df = pd.read_csv(file_path, sep=None, engine='python')
             logger.info(f"Загружен файл. Строк: {len(df)}, Колонок: {len(df.columns)}")
 
-            # 1. Оставляем только те колонки из HEADERS, которые реально есть в файле
-            existing_headers = [h for h in headers_list if h in df.columns]
-            if not existing_headers:
-                logger.error(f"В файле нет ни одной колонки из списка HEADERS!")
-                return None
+            # 1. Жестко фиксируем список колонок.
+            # Если в файле нет какой-то колонки из HEADERS, мы создадим её заполненную нулями.
+            # Это гарантирует, что на выходе ВСЕГДА будет 26 признаков.
+            data = pd.DataFrame(index=df.index)
 
-            data = df[existing_headers].copy()
+            for col in headers_list:
+                if col in df.columns:
+                    # Пытаемся превратить в число.
+                    # errors='coerce' превратит IP-адреса или текст в NaN
+                    converted = pd.to_numeric(df[col], errors='coerce')
 
-            # 2. ДИАГНОСТИКА: Ищем текстовые колонки
-            numeric_cols = []
-            for col in data.columns:
-                # Пытаемся конвертировать колонку
-                converted = pd.to_numeric(data[col], errors='coerce')
-                # Если в колонке больше 50% — это мусор (текст), выкидываем её из обучения
-                if converted.isna().sum() > len(data) * 0.5:
-                    logger.warning(f"Колонка '{col}' содержит текст (например, IP). ИСКЛЮЧАЕМ её из обучения.")
+                    # Считаем количество ошибок для лога
+                    na_count = converted.isna().sum()
+                    if na_count > 0:
+                        logger.warning(
+                            f"Колонка '{col}': обнаружено {na_count} некорректных значений (текст/IP). Заменяем на 0.")
+
+                    # Заполняем пропуски нулями, чтобы не терять строки
+                    data[col] = converted.fillna(0)
                 else:
-                    data[col] = converted
-                    numeric_cols.append(col)
+                    # Если колонки вообще нет в CSV, создаем её (набор из 26 должен быть полным)
+                    logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: Колонка {col} отсутствует в файле! Заполняю нулями.")
+                    data[col] = 0.0
 
-            # 3. Очистка
-            data = data[numeric_cols].dropna()
-            logger.info(f"После очистки осталось колонок: {len(numeric_cols)}, строк: {len(data)}")
-
-            if data.empty:
-                logger.error("ДАННЫХ НЕТ. Проверь: возможно, все выбранные колонки содержат текст.")
+            # 2. Проверка размерности
+            if data.shape[1] != len(headers_list):
+                logger.error(f"Ошибка размерности! Ожидалось {len(headers_list)}, получено {data.shape[1]}")
                 return None
+
+            # 3. Финальная очистка от пустых строк (если весь файл битый)
+            data = data.dropna()
+            logger.info(f"Подготовка завершена. Итого признаков: {data.shape[1]}, строк: {len(data)}")
 
             # 4. Нормализация
             if fit_scaler:
                 self.scaler = MinMaxScaler()
                 scaled_data = self.scaler.fit_transform(data)
+                logger.info("Скейлер обучен на 26 признаках.")
             else:
+                if self.scaler is None:
+                    raise ValueError("Скейлер не инициализирован для трансформации!")
                 scaled_data = self.scaler.transform(data)
 
             return scaled_data
 
         except Exception as e:
-            logger.error(f"Критическая ошибка: {e}")
+            logger.error(f"Критическая ошибка при подготовке данных: {e}")
             return None
 
     # НОВЫЕ МЕТОДЫ ДЛЯ СОХРАНЕНИЯ КОНТЕКСТА (Обязательно для диплома)

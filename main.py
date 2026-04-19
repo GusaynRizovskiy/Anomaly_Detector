@@ -324,201 +324,148 @@ def handle_metrics_for_collect(metrics, args):
 
 def run_file_validation(args, processor, detector):
     logger.info("--- ЗАПУСК РЕЖИМА ВАЛИДАЦИИ ФАЙЛА ---")
-    # Загрузка модели и скейлера
-    logger.info(f"Загрузка модели из {args.model_file} и скейлера из {args.scaler_file}...")
 
+    # 1. Загрузка конфигурации и моделей
     threshold = load_threshold(args.threshold)
-
-    # 1. Детектор грузит модель
     detector.load_model(args.model_file)
-
-    # 2. Процессор грузит скейлер (ИСПРАВЛЕНО: правильный объект и вызов без присваивания)
     processor.load_scaler(args.scaler_file)
 
     logger.info(f"Итоговый порог для анализа: {threshold:.6f}")
 
-    # Чтение CSV с автоматическим определением разделителя
     try:
-        df = pd.read_csv(args.data_file, sep=None, engine='python')
-        # Оставляем только те колонки, которые являются метриками (первые 26 числовых)
-        df = df[HEADERS]
-        logger.info(f"Прочитано: строк={df.shape[0]}, столбцов={df.shape[1]}")
+        # Читаем CSV с автоопределением разделителя
+        df_raw = pd.read_csv(args.data_file, sep=None, engine='python')
+        logger.info(f"Файл прочитан. Строк: {df_raw.shape[0]}, Всего колонок: {df_raw.shape[1]}")
 
-        if df.shape[1] < 2:
-            logger.error(f"ОШИБКА: всего {df.shape[1]} столбцов. Неверный разделитель?")
-            logger.error(f"Первые 5 строк:\n{df.head()}")
-            return
-
-        # Попытка извлечь временную метку (первый столбец, если похож на дату/время)
+        # --- ШАГ 1: Извлечение временной метки (для графика) ---
         timestamp_col = None
-        first_col = df.columns[0].lower()
-        if 'time' in first_col or 'date' in first_col or 'timestamp' in first_col:
-            timestamp_col = df.iloc[:, 0].copy()  # сохраняем копию временных меток
-            df = df.iloc[:, 1:]                   # удаляем столбец времени из данных
-            logger.info("Первый столбец интерпретирован как временная метка и сохранён для графика.")
-        else:
-            logger.warning("Не удалось обнаружить столбец с временной меткой. Ось X будет индексом окна.")
+        # Ищем колонку, которая НЕ входит в HEADERS, но содержит намеки на время
+        potential_time_cols = [c for c in df_raw.columns if
+                               any(x in c.lower() for x in ['time', 'date', 'ts', 'stamp'])]
 
-        # Проверка количества признаков
+        if potential_time_cols:
+            t_col_name = potential_time_cols[0]
+            timestamp_col = df_raw[t_col_name].copy()
+            logger.info(f"Временная метка найдена в колонке: '{t_col_name}'")
+        else:
+            logger.warning("Колонка времени не найдена. На графике будет индекс окна.")
+
+        # --- ШАГ 2: Подготовка признаков (Обязательно 26!) ---
+        # Выбираем только те колонки, что указаны в HEADERS
+        # Если какой-то колонки нет, создаем её заполненной нулями
+        df = pd.DataFrame(index=df_raw.index)
+        for col in HEADERS:
+            if col in df_raw.columns:
+                # errors='coerce' превратит случайный текст/IP в NaN, а fillna(0) исправит это
+                df[col] = pd.to_numeric(df_raw[col], errors='coerce').fillna(0)
+            else:
+                logger.warning(f"Колонка {col} отсутствует в CSV! Заполняю нулями.")
+                df[col] = 0.0
+
+        logger.info(f"Матрица признаков готова: {df.shape[1]} колонок (ожидалось {len(HEADERS)})")
+
+        # Проверка соответствия скейлеру
         expected_features = processor.scaler.n_features_in_
         if df.shape[1] != expected_features:
-            logger.error(f"Несовпадение признаков: в файле {df.shape[1]}, модель ожидает {expected_features}.")
+            logger.error(f"Критическое несовпадение! В коде {df.shape[1]} признаков, скейлер ждет {expected_features}.")
             return
 
     except Exception as e:
-        logger.error(f"Ошибка чтения файла: {e}")
+        logger.error(f"Ошибка при чтении или парсинге файла: {e}")
         return
 
-    # Масштабирование (трансформация)
+    # --- ШАГ 3: Масштабирование и создание окон ---
     try:
         scaled_data = processor.scaler.transform(df)
+        X_val = processor.create_sequences(scaled_data, args.time_step)
+
+        if len(X_val) == 0:
+            logger.error("Файл слишком короткий для формирования хотя бы одного окна.")
+            return
+        logger.info(f"Сформировано окон для анализа: {len(X_val)}")
     except Exception as e:
-        logger.error(f"Ошибка масштабирования: {e}")
+        logger.error(f"Ошибка подготовки тензоров: {e}")
         return
 
-    # Создание окон
-    X_val = processor.create_sequences(scaled_data, args.time_step)
-    if len(X_val) == 0:
-        logger.error("Файл слишком короткий для заданного time_step.")
-        return
-    logger.info(f"Сформировано окон для анализа: {len(X_val)}")
-
-    # Предсказание
-    logger.info("Выполняется предсказание нейросети...")
+    # --- ШАГ 4: Предсказание и расчет ошибки (MSE) ---
+    logger.info("Выполняется инференс нейросети...")
     try:
         reconstructions = detector.model.predict(X_val, verbose=1)
-        # MSE для каждого окна (усреднение по времени и признакам)
+        # Вычисляем MSE для каждого окна
         mse_errors = np.mean(np.power(X_val - reconstructions, 2), axis=(1, 2))
-        if args.labels:
-            logger.info(f"Загрузка файла истинных меток: {args.labels}")
-            try:
-                df_labels = pd.read_csv(args.labels)
-                label_col = None
-                for col in ['label', 'is_anomaly']:
-                    if col in df_labels.columns:
-                        label_col = col
-                        break
-                if label_col is None:
-                    logger.error("Файл меток должен содержать колонку 'label' или 'is_anomaly'")
-                    return
 
-                y_true_full = df_labels[label_col].values
-                expected_windows = len(mse_errors)
+        # ДИАГНОСТИКА: Почему 100% аномалий?
+        avg_mse = np.mean(mse_errors)
+        max_mse = np.max(mse_errors)
+        logger.info(f"АНАЛИЗ ОШИБОК: Средняя MSE={avg_mse:.6f}, Макс MSE={max_mse:.6f}, Порог={threshold:.6f}")
 
-                if len(y_true_full) == expected_windows + (args.time_step - 1):
-                    y_true = y_true_full[args.time_step - 1:]
-                    logger.info(f"Синхронизация: отброшено первых {args.time_step - 1} меток")
-                elif len(y_true_full) == expected_windows:
-                    logger.warning("Метки уже синхронизированы с окнами")
-                    y_true = y_true_full
-                else:
-                    logger.error(f"Несовпадение длины: меток {len(y_true_full)}, окон {expected_windows}")
-                    return
+        if avg_mse > threshold * 10:
+            logger.warning(
+                "ВНИМАНИЕ: Средняя ошибка в 10+ раз выше порога. Скейлер или модель не подходят к этим данным!")
 
-                if args.demo_mode:
-                    # Демонстрационный режим: генерируем идеальные метрики
-                    logger.info("ДЕМОНСТРАЦИОННЫЙ РЕЖИМ: будут показаны идеальные метрики")
-                    evaluate_and_plot_demo(
-                        data_file=args.data_file,
-                        threshold=threshold,
-                        output_prefix=f"plots/validation_{os.path.basename(args.data_file)}",
-                        time_step=args.time_step,
-                        interval=args.interval  # нужно добавить args.interval в парсер, если его нет
-                    )
-                else:
-                    y_pred = (mse_errors > threshold).astype(int)
-                    evaluate_and_plot(y_true, y_pred, mse_errors, threshold,
-                                      output_prefix=f"plots/validation_{os.path.basename(args.data_file)}")
-            except Exception as e:
-                logger.error(f"Ошибка при оценке метрик: {e}")
     except Exception as e:
-        logger.error(f"Ошибка при расчёте: {e}")
+        logger.error(f"Ошибка при расчёте предсказаний: {e}")
         return
 
-    # Поиск аномалий
+    # --- ШАГ 5: Поиск аномалий и логирование ---
     anomalies_idx = np.where(mse_errors > threshold)[0]
     num_anomalies = len(anomalies_idx)
-    logger.info(f"Обнаружено аномалий: {num_anomalies}")
 
-    # --- Сохранение результатов в JSON (как было) ---
     if num_anomalies > 0:
-        logger.info(f"Сохранение {num_anomalies} событий в JSON лог...")
+        logger.info(f"Обнаружено аномалий: {num_anomalies}. Сохранение в JSON...")
         for idx in anomalies_idx:
             anomaly_info = {
                 "source_file": args.data_file,
                 "window_index": int(idx),
                 "mse_error": float(mse_errors[idx]),
-                "threshold": float(threshold)
+                "threshold": float(threshold),
+                "timestamp": str(timestamp_col.iloc[idx + args.time_step - 1]) if timestamp_col is not None else "N/A"
             }
-            log_anomaly(anomaly_info, event_type="OFFLINE_DETECTION",args=args)
-        logger.info("Сохранение завершено.")
+            log_anomaly(anomaly_info, event_type="OFFLINE_DETECTION", args=args)
 
-    # --- Построение графика ---
+    # --- ШАГ 6: Визуализация ---
     try:
-        # Формирование оси X (времени)
-        if timestamp_col is not None:
-            # Для каждого окна берём временную метку последней строки в окне
-            x_values = [str(timestamp_col.iloc[i + args.time_step - 1]) for i in range(len(X_val))]
-        else:
-            x_values = list(range(len(X_val)))  # просто индекс окна
-
         plt.figure(figsize=(12, 6))
-        plt.plot(x_values, mse_errors, label='MSE ошибка', color='blue', linewidth=1)
 
-        # --- Настройка меток оси X (прореживание при большом количестве окон) ---
-        if len(x_values) > 20:
-            max_ticks = 10
-            step = max(1, len(x_values) // max_ticks)
-            tick_positions = list(range(0, len(x_values), step))
-            # добавим последнее окно, если оно не попало
-            if tick_positions[-1] != len(x_values) - 1:
-                tick_positions.append(len(x_values) - 1)
-            plt.xticks(tick_positions, [x_values[i] for i in tick_positions], rotation=45, ha='right')
+        # Формируем ось X
+        if timestamp_col is not None:
+            # Берем метку времени для конца каждого окна
+            x_axis = [str(timestamp_col.iloc[i + args.time_step - 1]) for i in range(len(X_val))]
         else:
-            plt.xticks(rotation=45, ha='right')
-        # ------------------------------------------------------------
+            x_axis = np.arange(len(X_val))
 
-        plt.axhline(y=threshold, color='red', linestyle='--', label=f'Порог ({threshold:.4f})')
-        plt.xlabel('Время' if timestamp_col is not None else 'Номер окна')
-        plt.ylabel('MSE ошибка')
-        plt.title(f'Валидация файла: {os.path.basename(args.data_file)}')
+        plt.plot(x_axis, mse_errors, label='MSE (Ошибка реконструкции)', color='blue', alpha=0.7)
+        plt.axhline(y=threshold, color='red', linestyle='--', label=f'Порог ({threshold})')
+
+        # Прореживание подписей оси X
+        if len(x_axis) > 15:
+            step = len(x_axis) // 10
+            plt.xticks(np.arange(0, len(x_axis), step), [x_axis[i] for i in range(0, len(x_axis), step)], rotation=30)
+
+        plt.title(f"Анализ файла: {os.path.basename(args.data_file)}")
+        plt.xlabel("Время / Номер окна")
+        plt.ylabel("MSE")
         plt.legend()
         plt.grid(True, alpha=0.3)
-
-        # Автоматическая подгонка, чтобы подписи поместились
         plt.tight_layout()
 
-        # Выделение аномальных точек
-        if len(anomalies_idx) > 0:
-            plt.scatter([x_values[i] for i in anomalies_idx],
-                        [mse_errors[i] for i in anomalies_idx],
-                        color='red', s=30, label='Аномалии', zorder=5)
-            plt.legend()
-
-        # Сохранение графика
-        plots_dir = "plots"
-        os.makedirs(plots_dir, exist_ok=True)
-        base_name = os.path.splitext(os.path.basename(args.data_file))[0]
-        plot_path = os.path.join(plots_dir, f"validation_{base_name}.png")
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        logger.info(f"График сохранён: {plot_path}")
-
-        if args.show:
-            plt.show()
-        else:
-            plt.close()
+        plot_path = os.path.join("plots", f"val_{os.path.basename(args.data_file)}.png")
+        os.makedirs("plots", exist_ok=True)
+        plt.savefig(plot_path, dpi=150)
+        logger.info(f"График сохранен: {plot_path}")
+        plt.close()
 
     except Exception as e:
         logger.error(f"Ошибка при построении графика: {e}")
 
-    # Вывод статистики в консоль
-    print("\n" + "=" * 40)
-    print(f"РЕЗУЛЬТАТЫ ВАЛИДАЦИИ")
-    print(f"Файл: {args.data_file}")
-    print(f"Всего проверено окон: {len(mse_errors)}")
-    print(f"Обнаружено аномалий: {num_anomalies}")
-    print(f"Процент аномалий:    {(num_anomalies / len(mse_errors)) * 100:.2f}%")
-    print("=" * 40 + "\n")
+    # Итоговый вывод
+    print("\n" + "=" * 50)
+    print(f"ОТЧЕТ ПО ВАЛИДАЦИИ")
+    print(f"Файл: {os.path.basename(args.data_file)}")
+    print(f"Всего окон: {len(mse_errors)}")
+    print(f"Аномалий:   {num_anomalies} ({(num_anomalies / len(mse_errors)) * 100:.2f}%)")
+    print(f"Средняя MSE: {avg_mse:.6f}")
+    print("=" * 50 + "\n")
 
 def main():
     global data_buffer, threshold
@@ -557,7 +504,7 @@ def main():
     args = parser.parse_args()
 
     processor = DataProcessor()
-    detector = AnomalyDetector(time_step=args.time_step, num_features=NUM_FEATURES)
+    detector = AnomalyDetector(time_step=args.time_step, num_features=len(HEADERS))
 
     # Инициализируем передатчик, если указаны параметры
     transmitter = None
@@ -635,6 +582,13 @@ def main():
         logger.info(f"Запуск режима обучения на файле: {args.data_file}")
 
         # 1. Передаем HEADERS, чтобы процессор знал, какие колонки брать
+        # В блоке обучения перед processor.preprocess_data
+        df = pd.read_csv(args.data_file)
+        logger.info(f"Сырые данные из файла: {df.shape}")  # Должно быть (N, 26 + что-то еще)
+
+        # Проверяем типы данных — это критично!
+        non_numeric = df.select_dtypes(exclude=[np.number]).columns.tolist()
+        logger.info(f"Нечисловые колонки, которые будут отброшены: {non_numeric}")
 
         raw_data = processor.load_and_preprocess_training_data(
 
