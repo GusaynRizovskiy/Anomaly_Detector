@@ -105,6 +105,11 @@ class RemoteTransmitter:
                         }
                     ]
                 }
+                # ИНФОРМАТИВНОЕ СООБЩЕНИЕ ДЛЯ КОНСОЛИ
+                print(
+                    f"[SERVER SUCCESS] [{datetime.now().strftime('%H:%M:%S')}] Событие успешно передано на SIEM-сервер.")
+
+                logger.info("Событие успешно отправлено на сервер.")
                 self.ws.send(json.dumps(event))
                 logger.info("Событие успешно отправлено на сервер.")
                 return True # Успешно отправлено

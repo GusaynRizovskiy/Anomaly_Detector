@@ -59,7 +59,10 @@ def save_anomaly_locally(anomaly_data):
 
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(event_to_save, f, ensure_ascii=False, indent=4)
-# Настройка заголовков (должны совпадать с порядком в сниффере)
+    # ИНФОРМАТИВНОЕ СООБЩЕНИЕ
+    print(f"[ЛОКАЛЬНЫЙ ЛОГ] [{datetime.now().strftime('%H:%M:%S')}] Аномалия сохранена в файл: {filename}")
+
+    # Настройка заголовков (должны совпадать с порядком в сниффере)
 HEADERS = [
     'total_packets', 'total_loopback', 'total_multicast', 'total_udp',
     'total_tcp', 'total_options', 'total_fragment', 'total_fin', 'total_syn',
@@ -277,13 +280,12 @@ def get_anomaly_details(sequence, reconstruction, threshold):
         "feature_contribution_value": float(diff[top_feature_idx]),
         "series_id": anomaly_series_id
     }
-def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None,transmitter=None):
-    """
-    Запись данных об аномалии в JSON-файл и опциональная отправка на удаленный сервер.
-    """
+
+
+def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None, transmitter=None):
     global buffering_notified
     try:
-        # 1. Логика записи в файл (остается прежней)
+        # 1. Логика записи в файл
         if event_type == "OFFLINE_DETECTION":
             log_dir = os.path.join("logs", "offline")
         else:
@@ -293,52 +295,51 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None,t
 
         filename = datetime.now().strftime("anomaly_%Y-%m-%d.json")
         filepath = os.path.join(log_dir, filename)
+
+        # Получаем уровень серьезности
         level = get_severity(anomaly_data['mse_error'], anomaly_data['threshold'])
+
         record = {
             "timestamp": datetime.now().isoformat(),
-            "level": level,  # Теперь динамический уровень
+            "level": level,
             "event_id": event_type,
             "description": f"Network anomaly detected (Score: {anomaly_data.get('anomaly_score', 0)}%)",
             "details": anomaly_data
         }
 
+        # Сохранение в общий JSON-лог
         with open(filepath, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
-        if transmitter and event_type != "OFFLINE_DETECTION":
-            # Мы создаем поток, который выполнит только одну задачу — отправку.
-            # daemon=True означает, что если вы закроете основную программу,
-            # этот поток не заблокирует выход.
-            thread = threading.Thread(
-                target=transmitter.send_event,
-                args=(anomaly_data,),
-                daemon=True
-            )
-            thread.start()
-            logger.info("Поток отправки аномалии на удаленный сервер запущен.")
-            # Логика для онлайн-режима
-            if args and args.mode == 'detect-online':
-                sent_success = False
+        # ИСПРАВЛЕННАЯ СТРОКА (используем ['ключ'] вместо .get['ключ'])
+        mse_val = anomaly_data['mse_error']
+        print(f"[LOG] [{datetime.now().strftime('%H:%M:%S')}] Аномалия зафиксирована (MSE: {mse_val:.6f})")
 
-                # Пытаемся отправить, если передали передатчик
-                if transmitter:
-                    sent_success = transmitter.send_event(record)
+        # 2. Логика отправки (ONLINE)
+        if args and args.mode == 'detect-online' and event_type != "OFFLINE_DETECTION":
+            sent_success = False
 
-                # Если отправить не удалось (нет связи, нет токена и т.д.)
-                if not sent_success:
-                    if not buffering_notified:
-                        print("\n" + "!" * 20)
-                        print("Начато локальное буферирование логов")
-                        print("!" * 20 + "\n")
-                        buffering_notified = True
+            if transmitter:
+                print(f"[NETWORK] Попытка отправки на сервер {args.server_url}...")
+                # Передаем исходные данные аномалии (или record, если сервер ждет его)
+                sent_success = transmitter.send_event(anomaly_data)
 
-                    save_anomaly_locally(record)
-                else:
-                    # Если связь восстановилась и отправка прошла успешно
-                    buffering_notified = False
+            if not sent_success:
+                if not buffering_notified:
+                    print("\n" + "!" * 20)
+                    print("СВЯЗЬ ПОТЕРЯНА: НАЧАТО ЛОКАЛЬНОЕ БУФЕРИРОВАНИЕ")
+                    print("!" * 20 + "\n")
+                    buffering_notified = True
 
+                # Вызываем функцию сохранения отдельного JSON файла
+                save_anomaly_locally(anomaly_data)
+            else:
+                if buffering_notified:
+                    print("[NETWORK] Связь восстановлена, данные отправлены.")
+                buffering_notified = False
 
     except Exception as e:
+        # Здесь выведется конкретная ошибка, если что-то пойдет не так
         logger.error(f"Ошибка при логировании аномалии: {e}")
 
 
@@ -356,7 +357,9 @@ def handle_metrics_for_test(metrics, processor, detector, args, transmitter=None
             row.append(metrics['output'].get(h.replace('output_', ''), 0))
 
     # 2. Нейросеть работает только с числами
-    scaled_row = processor.scaler.transform([row])[0]
+    #scaled_row = processor.scaler.transform([row])[0]
+    row_df = pd.DataFrame([row], columns=HEADERS)
+    scaled_row = processor.scaler.transform(row_df)[0]
     data_buffer.append(scaled_row)
 
     if len(data_buffer) == args.time_step:
