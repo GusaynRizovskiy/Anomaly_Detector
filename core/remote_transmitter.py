@@ -69,9 +69,13 @@ class RemoteTransmitter:
             self.ws = None
 
     def send_event(self, internal_anomaly_data):
-        """Преобразование внутреннего формата в формат сервера и отправка."""
+        """Преобразование внутреннего формата в формат сервера и отправка. Возвращает True/False."""
+        # 1. Если нет токена (не прошли аутентификацию), сразу выходим
+        if not self.token:
+            return False
+
         try:
-            if not self.ws or not self.ws.connected:
+            if not self.ws or not hasattr(self.ws, 'connected') or not self.ws.connected:
                 self.connect_ws()
 
             if self.ws and self.ws.connected:
@@ -83,12 +87,13 @@ class RemoteTransmitter:
 
                 ctx = internal_anomaly_data.get('network_context', {})
 
+                # Формируем структуру как на сервере
                 event = {
                     "type": "integratedContainerIds/transmittingEvents",
                     "transmittingEvents": [
                         {
                             "event_type": "alert",
-                            "timestamp": datetime.now().isoformat(), # Более стандартный формат
+                            "timestamp": datetime.now().isoformat(),
                             "src_ip": ctx.get('src_ip', '0.0.0.0'),
                             "src_port": int(ctx.get('src_port', 0)),
                             "dest_ip": ctx.get('dst_ip', '0.0.0.0'),
@@ -102,6 +107,9 @@ class RemoteTransmitter:
                 }
                 self.ws.send(json.dumps(event))
                 logger.info("Событие успешно отправлено на сервер.")
+                return True # Успешно отправлено
+            return False # WebSocket не подключен
         except Exception as e:
             logger.error(f"Ошибка при отправке через WS: {e}")
             self.ws = None
+            return False # Произошла ошибка

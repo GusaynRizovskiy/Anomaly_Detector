@@ -23,7 +23,42 @@ from core.remote_transmitter import RemoteTransmitter
 import json
 from core.labeler import DataLabeler
 
+# Флаг для однократного вывода уведомления в консоль
+buffering_notified = False
 
+
+def save_anomaly_locally(anomaly_data):
+    """Сохранение аномалии в формате JSON в папку /logs/online"""
+    online_dir = os.path.join("logs", "online")
+    if not os.path.exists(online_dir):
+        os.makedirs(online_dir)
+
+    ctx = anomaly_data.get('network_context', {})
+
+    # Структура JSON должна быть идентична серверной
+    event_to_save = {
+        "type": "integratedContainerIds/transmittingEvents",
+        "transmittingEvents": [
+            {
+                "event_type": "alert",
+                "timestamp": datetime.now().isoformat(),
+                "src_ip": ctx.get('src_ip', '0.0.0.0'),
+                "src_port": int(ctx.get('src_port', 0)),
+                "dest_ip": ctx.get('dst_ip', '0.0.0.0'),
+                "dest_port": int(ctx.get('dst_port', 0)),
+                "proto": ctx.get('protocol', 'TCP'),
+                "signature": f"Anomaly Detected (Score: {anomaly_data.get('anomaly_score', 0)}%)",
+                "severity": 2,  # По умолчанию WARNING
+                "category": "Network Anomaly"
+            }
+        ]
+    }
+
+    filename = f"anomaly_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    filepath = os.path.join(online_dir, filename)
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(event_to_save, f, ensure_ascii=False, indent=4)
 # Настройка заголовков (должны совпадать с порядком в сниффере)
 HEADERS = [
     'total_packets', 'total_loopback', 'total_multicast', 'total_udp',
@@ -246,6 +281,7 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None,t
     """
     Запись данных об аномалии в JSON-файл и опциональная отправка на удаленный сервер.
     """
+    global buffering_notified
     try:
         # 1. Логика записи в файл (остается прежней)
         if event_type == "OFFLINE_DETECTION":
@@ -280,6 +316,26 @@ def log_anomaly(anomaly_data, event_type="NETWORK_ANOMALY_DETECTED", args=None,t
             )
             thread.start()
             logger.info("Поток отправки аномалии на удаленный сервер запущен.")
+            # Логика для онлайн-режима
+            if args and args.mode == 'detect-online':
+                sent_success = False
+
+                # Пытаемся отправить, если передали передатчик
+                if transmitter:
+                    sent_success = transmitter.send_event(record)
+
+                # Если отправить не удалось (нет связи, нет токена и т.д.)
+                if not sent_success:
+                    if not buffering_notified:
+                        print("\n" + "!" * 20)
+                        print("Начато локальное буферирование логов")
+                        print("!" * 20 + "\n")
+                        buffering_notified = True
+
+                    save_anomaly_locally(record)
+                else:
+                    # Если связь восстановилась и отправка прошла успешно
+                    buffering_notified = False
 
 
     except Exception as e:
@@ -657,9 +713,12 @@ def main():
 
             else:
 
-                print("      - ОШИБКА: Не удалось авторизоваться на сервере. Проверьте логин/пароль.")
-
-                # Здесь можно решить: продолжать работу локально или выйти
+                print("\n" + "!" * 20)
+                print("ОШИБКА: Не удалось авторизоваться на сервере.")
+                print("Начато локальное буферирование логов")
+                print("!" * 20 + "\n")
+                global buffering_notified
+                buffering_notified = True
 
         else:
 
